@@ -1,4 +1,4 @@
 {
-  "id": "ha-20260831-194345-a7c2",
+  "id": "ha-20260831-195700-sync",
   "command": "git -C /config pull origin main && ha core check"
 }
