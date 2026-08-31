@@ -1,4 +1,4 @@
 {
-  "id": "ha-20260901-013100-j4d7",
-  "command": "git -C /config fetch origin main && git -C /config rebase origin/main && git -C /config push origin main"
+  "id": "ha-20260901-015100-p7w1",
+  "command": "git -C /config fetch origin main && git -C /config checkout origin/main -- deploy.sh apply_updates.py && bash /config/deploy.sh && python3 /config/apply_updates.py"
 }
