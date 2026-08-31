@@ -1,4 +1,4 @@
 {
-  "id": "ha-test-github",
-  "command": "ssh -T git@github.com"
+  "id": "ha-key-gen",
+  "command": "if [ ! -f /root/.ssh/id_rsa ]; then ssh-keygen -t rsa -b 4096 -N '' -f /root/.ssh/id_rsa; fi && cat /root/.ssh/id_rsa.pub"
 }
