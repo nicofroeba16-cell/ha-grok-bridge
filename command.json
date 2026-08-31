@@ -1,4 +1,4 @@
 {
-  "id": "ha-20260831-230000-xxxx",
-  "command": "mkdir -p /config/dashboards /config/themes /config/www && git -C /config pull origin main && cp -f /config/zuhause.yaml /config/dashboards/zuhause.yaml && cp -f /config/timo.yaml /config/dashboards/timo.yaml && cp -f /config/apple.yaml /config/themes/apple.yaml && cp -f /config/apple-optik.js /config/www/apple-optik.js && ha core check && ha core reload"
+  "id": "ha-20260831-230105-p4d2",
+  "command": "mkdir -p /config/dashboards /config/themes /config/www && git -C /config fetch origin main && git -C /config checkout origin/main -- configuration.yaml zuhause.yaml timo.yaml apple.yaml apple-optik.js deploy.sh && cp -f /config/zuhause.yaml /config/dashboards/zuhause.yaml && cp -f /config/timo.yaml /config/dashboards/timo.yaml && cp -f /config/apple.yaml /config/themes/apple.yaml && cp -f /config/apple-optik.js /config/www/apple-optik.js && ha core check && ha core reload"
 }
