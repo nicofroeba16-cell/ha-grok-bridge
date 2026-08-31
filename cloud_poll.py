@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
 import json
-import os
-import shlex
 import subprocess
 import time
 from datetime import datetime, timezone
@@ -14,14 +12,11 @@ LAST_ID = HOME / "last_id"
 RESULT_LOCAL = HOME / "result.json"
 CLONE = HOME / "bridge-push"
 INTERVAL = 20
-CONTAINER = os.environ.get("HA_CONTAINER", "homeassistant")
-HA_BINS = ("ha", "/usr/bin/ha", "/usr/local/bin/ha", "/bin/ha")
-CONFIG_CANDIDATES = (
-    "/config",
-    "/usr/share/hassio/homeassistant",
-    "/mnt/data/supervisor/homeassistant",
-)
-DOCKER_BINS = ("/usr/bin/docker", "/usr/local/bin/docker")
+SSH = [
+    "ssh", "-i", "/home/vboxuser/.ssh/id_rsa",
+    "-o", "BatchMode=yes", "-o", "ConnectTimeout=8",
+    "root@192.168.178.63",
+]
 
 ALLOWED_PREFIXES = (
     "ha core info", "ha core check", "ha core restart",
@@ -69,45 +64,14 @@ def fetch_command():
     return payload
 
 
-def _shell(cmd):
-    full = "export PATH=\"/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH\"; " + cmd
-    proc = subprocess.run(
-        ["bash", "-lc", full], text=True, capture_output=True, timeout=180, cwd=str(HOME),
-    )
-    out = (proc.stdout or "") + (("\n" + proc.stderr) if proc.stderr else "")
-    return proc.returncode, out.strip()
-
-
-def resolve_ha_cmd(cmd):
-    rest = cmd.strip()[2:].lstrip() if cmd.strip().startswith("ha ") else cmd
-    for binp in HA_BINS:
-        if binp == "ha" or Path(binp).exists():
-            if binp == "ha":
-                continue
-            return binp + " " + rest
-    return cmd
-
-
-def config_root():
-    for p in CONFIG_CANDIDATES:
-        if Path(p).is_dir():
-            return p
-    return None
-
-
 def run_command(cmd):
     if not allowed(cmd):
         return 1, "ABGEBROCHEN: nicht in der Whitelist!"
-    stripped = cmd.strip()
-    if stripped.startswith("ha core"):
-        return _shell(resolve_ha_cmd(stripped))
-    root = config_root()
-    if root:
-        return _shell(cmd.replace("/config", root))
-    for docker in DOCKER_BINS:
-        if Path(docker).exists():
-            return _shell("%s exec %s bash -lc %s" % (docker, CONTAINER, shlex.quote(cmd)))
-    return 1, "kein /config-Pfad und kein docker"
+    proc = subprocess.run(
+        SSH + [cmd], text=True, capture_output=True, timeout=180,
+    )
+    out = (proc.stdout or "") + (("\n" + proc.stderr) if proc.stderr else "")
+    return proc.returncode, out.strip()
 
 
 def write_result(entry):
@@ -130,7 +94,7 @@ def write_result(entry):
 def main():
     HOME.mkdir(parents=True, exist_ok=True)
     last = LAST_ID.read_text().strip() if LAST_ID.exists() else ""
-    log("Ueberwache command.json per Git-SSH...")
+    log("Ueberwache command.json, exec via SSH root@192.168.178.63")
     while True:
         payload = fetch_command()
         if payload:
