@@ -1,4 +1,4 @@
 {
-  "id": "ha-git-final-run",
+  "id": "ha-git-final-run-2",
   "command": "git -C /config remote set-url origin git@github.com:nicofroeba16-cell/HA-CONFIG.git && git -C /config pull origin main && ha core check"
 }
