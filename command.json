@@ -1,4 +1,4 @@
 {
-  "id": "ha-20260831-224145-d8f3",
-  "command": "test -f /config/dashboards/zuhause.yaml && test -f /config/dashboards/timo.yaml && test -f /config/configuration.yaml && test -f /config/themes/apple.yaml && test -f /config/www/apple-optik.js && ha core check && ha core reload"
+  "id": "ha-20260831-224400-a11c",
+  "command": "mkdir -p /config/dashboards /config/themes /config/www && [ -f /config/zuhause.yaml ] && cp -f /config/zuhause.yaml /config/dashboards/zuhause.yaml; [ -f /config/timo.yaml ] && cp -f /config/timo.yaml /config/dashboards/timo.yaml; [ -f /config/apple.yaml ] && cp -f /config/apple.yaml /config/themes/apple.yaml; [ -f /config/apple-optik.js ] && cp -f /config/apple-optik.js /config/www/apple-optik.js; grep -q wohnzimmer_wohnzimmer_fire_tv /config/dashboards/zuhause.yaml && ha core check && ha core reload"
 }
