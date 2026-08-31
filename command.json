@@ -1,4 +1,4 @@
 {
-  "id": "ha-key-gen-new",
-  "command": "ssh-keygen -t rsa -b 4096 -N '' -f /root/.ssh/id_rsa && cat /root/.ssh/id_rsa.pub"
+  "id": "ha-20260831-221015-c4e8",
+  "command": "test -f /config/dashboards/zuhause.yaml && test -f /config/dashboards/timo.yaml && test -f /config/configuration.yaml && test -f /config/themes/apple.yaml && test -f /config/www/apple-optik.js && ha core check && ha core reload"
 }
