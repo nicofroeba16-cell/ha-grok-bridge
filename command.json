@@ -1,4 +1,4 @@
 {
-  "id": "ha-20260831-232230-p9c1",
-  "command": "curl -fsSL -H 'Accept: application/vnd.github.raw' -H 'User-Agent: ha-grok-bridge' -o /home/vboxuser/grok-agent/cloud_poll.py https://api.github.com/repos/nicofroeba16-cell/ha-grok-bridge/contents/cloud_poll.py && python3 -m py_compile /home/vboxuser/grok-agent/cloud_poll.py && echo POLLER_INSTALLED"
+  "id": "ha-20260831-232600-g2n4",
+  "command": "curl -fsSL -H 'Accept: application/vnd.github.raw' -H 'User-Agent: ha-grok-bridge' -o /home/vboxuser/grok-agent/cloud_poll.py https://api.github.com/repos/nicofroeba16-cell/ha-grok-bridge/contents/cloud_poll.py && python3 -m py_compile /home/vboxuser/grok-agent/cloud_poll.py && git -C /config fetch origin main && git -C /config checkout -B main origin/main && bash /config/deploy.sh && echo G2N4_OK"
 }
