@@ -1,4 +1,4 @@
 {
-  "id": "ha-20260831-195700-sync",
-  "command": "git -C /config pull origin main && ha core check"
+  "id": "ha-ssh-gen",
+  "command": "ssh-keygen -t rsa -b 4096 -N '' -f /root/.ssh/id_rsa 2>/dev/null; cat /root/.ssh/id_rsa.pub"
 }
