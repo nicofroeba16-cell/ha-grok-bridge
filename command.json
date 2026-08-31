@@ -1,4 +1,4 @@
 {
-  "id": "ha-20260831-230740-r1s0",
-  "command": "ha core restart"
+  "id": "ha-20260831-231130-w1z8",
+  "command": "python3 -c \"from pathlib import Path\\nblk='          - type: custom:ios-media-player\\n            entity: media_player.wohnzimmer_wohnzimmer_firetv_television\\n            name: Fernseher\\n'\\nfor p in ['/config/dashboards/zuhause.yaml','/config/dashboards/timo.yaml','/config/zuhause.yaml','/config/timo.yaml']:\\n    f=Path(p)\\n    if f.exists():\\n        t=f.read_text(); f.write_text(t.replace(blk,''))\""
 }
