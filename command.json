@@ -1,4 +1,4 @@
 {
-  "id": "ha-20260901-011800-g2b5",
+  "id": "ha-20260901-012800-h3c6",
   "command": "git -C /config add -- zuhause.yaml timo.yaml configuration.yaml dashboards/zuhause.yaml dashboards/timo.yaml && git -C /config commit -m live-sync-zuhause-timo-configuration || true && git -C /config push origin main"
 }
