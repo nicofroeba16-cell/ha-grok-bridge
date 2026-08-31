@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Poller: command.json per Git-SSH. Whitelist + docker exec."""
+"""Poller: command.json per Git-SSH. ha auf dem Host. /config per Hassio-Pfad oder docker."""
 import json
 import os
 import shlex
@@ -16,6 +16,12 @@ RESULT_LOCAL = HOME / "result.json"
 CLONE = HOME / "bridge-push"
 INTERVAL = 20
 CONTAINER = os.environ.get("HA_CONTAINER", "homeassistant")
+CONFIG_CANDIDATES = (
+    "/config",
+    "/usr/share/hassio/homeassistant",
+    "/mnt/data/supervisor/homeassistant",
+)
+DOCKER_BINS = ("/usr/bin/docker", "/usr/local/bin/docker")
 
 ALLOWED_PREFIXES = (
     "ha core info",
@@ -80,18 +86,30 @@ def _shell(cmd):
     return proc.returncode, out.strip()
 
 
+def config_root():
+    for p in CONFIG_CANDIDATES:
+        if Path(p).is_dir():
+            return p
+    return None
+
+
 def run_command(cmd):
     if not allowed(cmd):
         return 1, "ABGEBROCHEN: nicht in der Whitelist!"
-    if Path("/config").is_dir():
-        return _shell(
-            "mkdir -p ~/.ssh && ssh-keyscan -t rsa,ecdsa,ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null; " + cmd
-        )
-    inner = "docker exec %s bash -lc %s" % (CONTAINER, shlex.quote(cmd))
-    code, out = _shell(inner)
-    if "No such container" in out:
-        return _shell("docker exec hassio_cli bash -lc %s" % shlex.quote(cmd))
-    return code, out
+    stripped = cmd.strip()
+    if stripped.startswith("ha core"):
+        return _shell(stripped)
+    root = config_root()
+    if root:
+        mapped = cmd.replace("/config", root)
+        extra = ""
+        if root != "/config":
+            extra = "mkdir -p ~/.ssh && ssh-keyscan -t rsa,ecdsa,ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null; "
+        return _shell(extra + mapped)
+    for docker in DOCKER_BINS:
+        if Path(docker).exists():
+            return _shell("%s exec %s bash -lc %s" % (docker, CONTAINER, shlex.quote(cmd)))
+    return 1, "kein /config-Pfad und kein docker"
 
 
 def write_result(entry):
