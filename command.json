@@ -1,4 +1,4 @@
 {
-  "id": "ha-ssh-explicit",
-  "command": "ssh -i /root/.ssh/id_rsa -T git@github.com"
+  "id": "ha-key-gen-new",
+  "command": "ssh-keygen -t rsa -b 4096 -N '' -f /root/.ssh/id_rsa && cat /root/.ssh/id_rsa.pub"
 }
