@@ -1,4 +1,4 @@
 {
-  "id": "ha-20260831-231720-u5k3",
-  "command": "git -C /config fetch origin main && git -C /config checkout origin/main -- apply_updates.py && python3 /config/apply_updates.py"
+  "id": "ha-20260831-231800-t8b2",
+  "command": "ha core info"
 }
