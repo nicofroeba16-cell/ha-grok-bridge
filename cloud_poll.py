@@ -1,27 +1,21 @@
 #!/usr/bin/env python3
-"""GitHub-API-Poller. Befehle nur per Whitelist, /config via Docker falls noetig."""
-import base64
+"""Poller: command.json per Git-SSH. Whitelist + docker exec."""
 import json
 import os
 import shlex
 import subprocess
 import time
-import urllib.error
-import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
 OWNER = "nicofroeba16-cell"
 REPO = "ha-grok-bridge"
-API = "https://api.github.com/repos/%s/%s/contents/command.json?ref=main" % (OWNER, REPO)
 HOME = Path("/home/vboxuser/grok-agent")
 LAST_ID = HOME / "last_id"
 RESULT_LOCAL = HOME / "result.json"
-PUSH_DIR = HOME / "bridge-push"
-INTERVAL = 15
+CLONE = HOME / "bridge-push"
+INTERVAL = 20
 CONTAINER = os.environ.get("HA_CONTAINER", "homeassistant")
-
-UA = {"User-Agent": "ha-grok-bridge", "Accept": "application/vnd.github+json"}
 
 ALLOWED_PREFIXES = (
     "ha core info",
@@ -52,38 +46,35 @@ def allowed(cmd):
     return True
 
 
-def api_get(url):
-    req = urllib.request.Request(url, headers=UA)
-    with urllib.request.urlopen(req, timeout=20) as resp:
-        return json.loads(resp.read().decode())
-
-
 def fetch_command():
     try:
-        data = api_get(API)
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+        if not CLONE.exists():
+            subprocess.run(
+                ["git", "clone", "--depth", "1",
+                 "git@github.com:%s/%s.git" % (OWNER, REPO), str(CLONE)],
+                check=True, capture_output=True, text=True, timeout=60,
+            )
+        else:
+            subprocess.run(
+                ["git", "-C", str(CLONE), "fetch", "origin", "main"],
+                capture_output=True, text=True, timeout=60,
+            )
+            subprocess.run(
+                ["git", "-C", str(CLONE), "checkout", "origin/main", "--", "command.json"],
+                capture_output=True, text=True, timeout=30,
+            )
+        payload = json.loads((CLONE / "command.json").read_text())
+    except (subprocess.SubprocessError, OSError, json.JSONDecodeError) as exc:
         log("[-] command.json: %s" % exc)
-        return None
-    raw = data.get("content") or ""
-    try:
-        text = base64.b64decode(raw.replace("\n", "")).decode()
-        payload = json.loads(text)
-    except (ValueError, json.JSONDecodeError) as exc:
-        log("[-] parse: %s" % exc)
         return None
     if not isinstance(payload, dict) or not payload.get("id") or not payload.get("command"):
         return None
     return payload
 
 
-def _shell(cmd, cwd=None):
+def _shell(cmd):
     proc = subprocess.run(
-        cmd,
-        shell=True,
-        text=True,
-        capture_output=True,
-        timeout=180,
-        cwd=cwd or str(HOME),
+        cmd, shell=True, text=True, capture_output=True, timeout=180, cwd=str(HOME),
     )
     out = (proc.stdout or "") + (("\n" + proc.stderr) if proc.stderr else "")
     return proc.returncode, out.strip()
@@ -93,44 +84,29 @@ def run_command(cmd):
     if not allowed(cmd):
         return 1, "ABGEBROCHEN: nicht in der Whitelist!"
     if Path("/config").is_dir():
-        wrapped = (
-            "mkdir -p ~/.ssh && "
-            "ssh-keyscan -t rsa,ecdsa,ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null; "
-            + cmd
+        return _shell(
+            "mkdir -p ~/.ssh && ssh-keyscan -t rsa,ecdsa,ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null; " + cmd
         )
-        return _shell(wrapped)
     inner = "docker exec %s bash -lc %s" % (CONTAINER, shlex.quote(cmd))
     code, out = _shell(inner)
     if "No such container" in out:
-        inner = "docker exec hassio_cli bash -lc %s" % shlex.quote(cmd)
-        return _shell(inner)
+        return _shell("docker exec hassio_cli bash -lc %s" % shlex.quote(cmd))
     return code, out
 
 
 def write_result(entry):
     RESULT_LOCAL.write_text(json.dumps(entry, ensure_ascii=False, indent=2) + "\n")
     try:
-        if not PUSH_DIR.exists():
-            subprocess.run(
-                ["git", "clone", "--depth", "1",
-                 "git@github.com:%s/%s.git" % (OWNER, REPO), str(PUSH_DIR)],
-                check=True, capture_output=True, text=True, timeout=60,
-            )
-        else:
-            subprocess.run(
-                ["git", "-C", str(PUSH_DIR), "pull", "--ff-only", "origin", "main"],
-                capture_output=True, text=True, timeout=60,
-            )
-        dest = PUSH_DIR / "result.json"
+        dest = CLONE / "result.json"
         dest.write_text(json.dumps(entry, ensure_ascii=False, indent=2) + "\n")
-        subprocess.run(["git", "-C", str(PUSH_DIR), "add", "result.json"], check=False)
+        subprocess.run(["git", "-C", str(CLONE), "add", "result.json"], check=False)
         st = subprocess.run(
-            ["git", "-C", str(PUSH_DIR), "commit", "-m", "result %s" % entry.get("id")],
+            ["git", "-C", str(CLONE), "commit", "-m", "result %s" % entry.get("id")],
             capture_output=True, text=True,
         )
         if st.returncode == 0:
             subprocess.run(
-                ["git", "-C", str(PUSH_DIR), "push", "origin", "main"],
+                ["git", "-C", str(CLONE), "push", "origin", "main"],
                 capture_output=True, text=True, timeout=60,
             )
     except (subprocess.SubprocessError, OSError) as exc:
@@ -140,7 +116,7 @@ def write_result(entry):
 def main():
     HOME.mkdir(parents=True, exist_ok=True)
     last = LAST_ID.read_text().strip() if LAST_ID.exists() else ""
-    log("Ueberwache GitHub-API auf neue Befehle...")
+    log("Ueberwache command.json per Git-SSH...")
     while True:
         payload = fetch_command()
         if payload:
