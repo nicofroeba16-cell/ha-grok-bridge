@@ -1,4 +1,4 @@
 {
-  "id": "ha-20260831-234200-h8q6",
-  "command": "ha core info"
+  "id": "ha-20260831-234400-d1p1",
+  "command": "bash /config/deploy.sh"
 }
