@@ -1,4 +1,4 @@
 {
-  "id": "ha-20260831-214545-859b",
+  "id": "ha-20260831-214931-c392",
   "command": "git -C /config fetch origin main && git -C /config checkout -B main origin/main && bash /config/deploy.sh"
 }
