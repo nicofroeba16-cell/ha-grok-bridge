@@ -1,4 +1,4 @@
 {
-  "id": "ha-key-gen-v2",
-  "command": "if [ ! -f /root/.ssh/id_rsa ]; then ssh-keygen -t rsa -b 4096 -N '' -f /root/.ssh/id_rsa; fi && cat /root/.ssh/id_rsa.pub"
+  "id": "ha-git-sync-v4",
+  "command": "git -C /config remote set-url origin git@github.com:nicofroeba16-cell/HA-CONFIG.git && git -C /config pull origin main && ha core check"
 }
