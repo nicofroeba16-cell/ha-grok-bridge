@@ -1,4 +1,4 @@
 {
-  "id": "ha-20260831-221015-c4e8",
-  "command": "test -f /config/dashboards/zuhause.yaml && test -f /config/dashboards/timo.yaml && test -f /config/configuration.yaml && test -f /config/themes/apple.yaml && test -f /config/www/apple-optik.js && ha core check && ha core reload"
+  "id": "ha-20260831-223945-e2a1",
+  "command": "ha core info"
 }
