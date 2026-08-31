@@ -1,4 +1,4 @@
 {
-  "id": "1",
-  "command": "ha core info"
+  "id": "50",
+  "command": "git -C /config pull origin main || (git -C /config init && git -C /config remote add origin https://github.com/nicofroeba16-cell/HA-CONFIG.git && git -C /config fetch && git -C /config checkout -t origin/main -f)"
 }
