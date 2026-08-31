@@ -1,4 +1,4 @@
 {
-  "id": "ha-20260901-001300-r3s1",
-  "command": "ha core restart"
+  "id": "ha-20260901-001330-d4r1",
+  "command": "git -C /config fetch origin main && git -C /config checkout origin/main -- deploy.sh && bash /config/deploy.sh && ha core restart"
 }
