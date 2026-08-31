@@ -1,4 +1,4 @@
 {
-  "id": "ha-20260901-015100-p7w1",
-  "command": "git -C /config fetch origin main && git -C /config checkout origin/main -- deploy.sh apply_updates.py && bash /config/deploy.sh && python3 /config/apply_updates.py"
+  "id": "ha-20260901-015700-t4v2",
+  "command": "git -C /config fetch origin main && git -C /config checkout origin/main -- deploy.sh && bash /config/deploy.sh"
 }
