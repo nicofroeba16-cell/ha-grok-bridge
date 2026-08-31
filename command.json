@@ -1,4 +1,4 @@
 {
-  "id": "ha-20260901-000200-hacs2",
-  "command": "git -C /config fetch origin main && git -C /config checkout origin/main -- deploy.sh && bash /config/deploy.sh"
+  "id": "ha-20260901-000700-idle",
+  "command": "ha core info"
 }
