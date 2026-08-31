@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-"""Poller: command.json per Git-SSH. ha auf dem Host. /config per Hassio-Pfad oder docker."""
 import json
 import os
 import shlex
@@ -16,6 +15,7 @@ RESULT_LOCAL = HOME / "result.json"
 CLONE = HOME / "bridge-push"
 INTERVAL = 20
 CONTAINER = os.environ.get("HA_CONTAINER", "homeassistant")
+HA_BINS = ("ha", "/usr/bin/ha", "/usr/local/bin/ha", "/bin/ha")
 CONFIG_CANDIDATES = (
     "/config",
     "/usr/share/hassio/homeassistant",
@@ -24,14 +24,10 @@ CONFIG_CANDIDATES = (
 DOCKER_BINS = ("/usr/bin/docker", "/usr/local/bin/docker")
 
 ALLOWED_PREFIXES = (
-    "ha core info",
-    "ha core check",
-    "ha core restart",
-    "git -C /config ",
-    "bash /config/deploy.sh",
+    "ha core info", "ha core check", "ha core restart",
+    "git -C /config ", "bash /config/deploy.sh",
     "python3 /config/apply_updates.py",
-    "mkdir -p /config/",
-    "cp -f /config/",
+    "mkdir -p /config/", "cp -f /config/",
 )
 
 
@@ -40,8 +36,7 @@ def log(msg):
 
 
 def allowed(cmd):
-    c = cmd.strip()
-    parts = [p.strip() for p in c.replace("&&", ";").split(";") if p.strip()]
+    parts = [p.strip() for p in cmd.strip().replace("&&", ";").split(";") if p.strip()]
     if not parts:
         return False
     for p in parts:
@@ -61,14 +56,10 @@ def fetch_command():
                 check=True, capture_output=True, text=True, timeout=60,
             )
         else:
-            subprocess.run(
-                ["git", "-C", str(CLONE), "fetch", "origin", "main"],
-                capture_output=True, text=True, timeout=60,
-            )
-            subprocess.run(
-                ["git", "-C", str(CLONE), "checkout", "origin/main", "--", "command.json"],
-                capture_output=True, text=True, timeout=30,
-            )
+            subprocess.run(["git", "-C", str(CLONE), "fetch", "origin", "main"],
+                           capture_output=True, text=True, timeout=60)
+            subprocess.run(["git", "-C", str(CLONE), "checkout", "origin/main", "--", "command.json"],
+                           capture_output=True, text=True, timeout=30)
         payload = json.loads((CLONE / "command.json").read_text())
     except (subprocess.SubprocessError, OSError, json.JSONDecodeError) as exc:
         log("[-] command.json: %s" % exc)
@@ -79,11 +70,22 @@ def fetch_command():
 
 
 def _shell(cmd):
+    full = "export PATH=\"/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH\"; " + cmd
     proc = subprocess.run(
-        cmd, shell=True, text=True, capture_output=True, timeout=180, cwd=str(HOME),
+        ["bash", "-lc", full], text=True, capture_output=True, timeout=180, cwd=str(HOME),
     )
     out = (proc.stdout or "") + (("\n" + proc.stderr) if proc.stderr else "")
     return proc.returncode, out.strip()
+
+
+def resolve_ha_cmd(cmd):
+    rest = cmd.strip()[2:].lstrip() if cmd.strip().startswith("ha ") else cmd
+    for binp in HA_BINS:
+        if binp == "ha" or Path(binp).exists():
+            if binp == "ha":
+                continue
+            return binp + " " + rest
+    return cmd
 
 
 def config_root():
@@ -98,14 +100,10 @@ def run_command(cmd):
         return 1, "ABGEBROCHEN: nicht in der Whitelist!"
     stripped = cmd.strip()
     if stripped.startswith("ha core"):
-        return _shell(stripped)
+        return _shell(resolve_ha_cmd(stripped))
     root = config_root()
     if root:
-        mapped = cmd.replace("/config", root)
-        extra = ""
-        if root != "/config":
-            extra = "mkdir -p ~/.ssh && ssh-keyscan -t rsa,ecdsa,ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null; "
-        return _shell(extra + mapped)
+        return _shell(cmd.replace("/config", root))
     for docker in DOCKER_BINS:
         if Path(docker).exists():
             return _shell("%s exec %s bash -lc %s" % (docker, CONTAINER, shlex.quote(cmd)))
@@ -123,10 +121,8 @@ def write_result(entry):
             capture_output=True, text=True,
         )
         if st.returncode == 0:
-            subprocess.run(
-                ["git", "-C", str(CLONE), "push", "origin", "main"],
-                capture_output=True, text=True, timeout=60,
-            )
+            subprocess.run(["git", "-C", str(CLONE), "push", "origin", "main"],
+                           capture_output=True, text=True, timeout=60)
     except (subprocess.SubprocessError, OSError) as exc:
         log("[-] result.json push: %s" % exc)
 
@@ -146,10 +142,7 @@ def main():
                 log("[+] Ergebnis:")
                 log(out or "(leer)")
                 write_result({
-                    "id": cid,
-                    "command": cmd,
-                    "exit_code": code,
-                    "ok": code == 0,
+                    "id": cid, "command": cmd, "exit_code": code, "ok": code == 0,
                     "output": out,
                     "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 })
