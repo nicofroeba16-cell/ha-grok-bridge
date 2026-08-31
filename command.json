@@ -1,4 +1,4 @@
 {
-  "id": "ha-git-sync-v3",
-  "command": "git -C /config remote set-url origin git@github.com:nicofroeba16-cell/HA-CONFIG.git && git -C /config pull origin main && ha core check"
+  "id": "ha-test-github",
+  "command": "ssh -T git@github.com"
 }
