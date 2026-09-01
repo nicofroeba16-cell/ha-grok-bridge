@@ -11,11 +11,9 @@ RUN apk add --no-cache \
     openssh-client
 
 COPY file_bridge.py /opt/ha-file-sync-bridge/file_bridge.py
-COPY ai_control.py /opt/ha-file-sync-bridge/ai_control.py
-COPY sitecustomize.py /opt/ha-file-sync-bridge/sitecustomize.py
 COPY run.sh /run.sh
 COPY known_hosts /opt/ha-file-sync-bridge/known_hosts
 
-RUN chmod 0755 /run.sh /opt/ha-file-sync-bridge/file_bridge.py /opt/ha-file-sync-bridge/ai_control.py
+RUN chmod 0755 /run.sh /opt/ha-file-sync-bridge/file_bridge.py
 
 ENTRYPOINT ["/run.sh"]
