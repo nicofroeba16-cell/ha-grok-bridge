@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "1.12"
+VERSION = "1.13"
 DATA = Path("/data")
 CONFIG = Path("/config")
 WORK = DATA / "bridge-work"
@@ -236,7 +236,7 @@ def stage_remote(c):
         if src.name == ".git" or excluded(src.name, c):
             continue
         dst = STAGE / src.name
-        shutil.copytree(src, dst, ignore=ignore(c)) if src.is_dir() else shutil.copy2(src, dst)
+        shutil.copytree(src, dst, ignore=ignore(c)) if src.is_dir() else shutil.copy2(src,dst)
     findings = secret_scan(STAGE, c)
     if findings:
         raise RuntimeError(f"SECRET SCAN BLOCKED: {len(findings)} finding(s): {', '.join(findings[:5])}")
@@ -254,7 +254,7 @@ def deploy_stage(c, previous_snapshot=None):
             dst = CONFIG / src.name
             if dst.exists():
                 shutil.rmtree(dst) if dst.is_dir() else dst.unlink()
-            shutil.copytree(src, dst, ignore=ignore(c)) if src.is_dir() else shutil.copy2(src, dst)
+            shutil.copytree(src, dst, ignore=ignore(c)) if src.is_dir() else shutil.copy2(src,dst)
         if treehash(CONFIG, c) != treehash(STAGE, c):
             raise RuntimeError("deployment verification failed: /config hash mismatch")
     except Exception:
@@ -438,7 +438,10 @@ def process_ai_control(c,branch,dry):
                     if previous is not None and bool(c.get("rollback_on_error", True)): restore_snapshot(previous,c)
                     raise RuntimeError(f"SECRET SCAN BLOCKED: {len(findings)} finding(s): {', '.join(findings[:5])}")
             elif action=="browse": result=browse(command.get("path","."),c)
-            else: result={"ok":True,"commit":remote_head(branch),"config_hash":treehash(CONFIG,c)}
+            else:
+                remote = remote_head(branch)
+                deploy_remote(c, remote)
+                result={"ok":True,"commit":remote,"config_hash":treehash(CONFIG,c),"deployed":True}
             command_path.unlink(missing_ok=True); _control_result(results_dir,command_id,{"action":action,**result})
             push(branch,dry,c,message=f"AI control: {action} {command_id}")
             log(f"AI control: completed {action} {command_id}")
