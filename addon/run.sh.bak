@@ -10,10 +10,6 @@ KEY_SOURCE="/ssl/ha-grok-bridge-new"
 log "HA Grok Bridge Add-on $VERSION – Git + File Transfer"
 
 mkdir -p /data/ssh /data/.ssh
-cp -f /ssl/ha-grok-bridge-new /data/ssh/id_ed25519
-chmod 600 /data/ssh/id_ed25519
-ssh-keyscan -H github.com > /data/.ssh/known_hosts 2>/dev/null || true
-chmod 600 /data/.ssh/known_hosts
 chmod 700 /data/ssh /data/.ssh
 
 if [[ ! -f "$KEY_SOURCE" ]]; then
@@ -43,6 +39,3 @@ if [[ ! -d /config ]]; then
 fi
 
 log "/config ok"
-
-log "Starte cloud_poll.py ..."
-exec python3 /opt/ha-grok-bridge/cloud_poll.py
