@@ -1,7 +1,10 @@
-#!/usr/bin/with-contenv bashio
+#!/bin/bash
+# 0.2.7 — kein s6/with-contenv (init: false).
 set -euo pipefail
 
-bashio::log.info "HA Grok Bridge Add-on 0.2.4 — nur Git, keine API"
+log() { echo "[bridge] $*" ; }
+
+log "HA Grok Bridge Add-on 0.2.7 — nur Git, keine API"
 
 mkdir -p /data/ssh /data/.ssh
 chmod 700 /data/ssh /data/.ssh
@@ -16,10 +19,10 @@ elif [[ -f /data/ssh/id_rsa ]]; then
 fi
 
 if [[ -z "$KEY" ]]; then
-  bashio::log.warning "Kein Git-SSH-Key. Lege /data/ssh/id_ed25519 oder /ssl/ha-grok-bridge."
+  log "WARN kein Git-SSH-Key"
 else
   chmod 600 "$KEY" || true
-  bashio::log.info "Git-SSH-Key: $KEY"
+  log "Git-SSH-Key: $KEY"
   export GIT_SSH_COMMAND="ssh -i ${KEY} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o UserKnownHostsFile=/data/.ssh/known_hosts"
 fi
 
@@ -28,14 +31,14 @@ chmod 600 /data/.ssh/known_hosts || true
 
 if [[ ! -d /config && -d /homeassistant ]]; then
   ln -sfn /homeassistant /config
-  bashio::log.warning "/config fehlte, Link -> /homeassistant"
+  log "WARN /config Link -> /homeassistant"
 fi
 if [[ ! -d /config ]]; then
-  bashio::log.fatal "/config nicht gemappt — Add-on stoppt. config.yaml: path: /config setzen."
+  log "FATAL /config nicht gemappt"
   ls -la / || true
   exit 1
 fi
-bashio::log.info "/config ok ($(ls -1 /config | wc -l) Eintraege)"
+log "/config ok"
 
 export HOME=/data
 export BRIDGE_HOME=/data

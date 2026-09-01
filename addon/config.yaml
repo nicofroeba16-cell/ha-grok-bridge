@@ -1,12 +1,12 @@
 name: "HA Grok Bridge"
-version: "0.2.6"
+version: "0.2.7"
 slug: ha_grok_bridge
 description: "Pollt command.json und führt Whitelist-Befehle lokal auf /config aus. Ersatz für ki2. Keine HTTP-API."
 url: "https://github.com/nicofroeba16-cell/ha-grok-bridge"
 arch:
   - aarch64
   - amd64
-init: true
+init: false
 startup: services
 boot: manual
 hassio_api: true
