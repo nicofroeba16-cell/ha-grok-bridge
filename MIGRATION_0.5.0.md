@@ -2,14 +2,11 @@
 
 The bridge is now a bidirectional `/config` synchronization service.
 
-## Important
-
-- Default initial sync is `ha_to_git`.
-- `git_to_ha` is available as an explicit initial mode and manual operation.
-- `bidirectional` detects simultaneous local/remote changes and stops instead of overwriting either side.
-- Runtime and secret material is excluded by default.
-- Secret scanning blocks a push when suspicious secret material is detected.
-- Snapshots are created before destructive GitHub -> `/config` operations and before restore.
+- Initial sync can be HA -> GitHub or GitHub -> HA.
+- Bidirectional mode detects simultaneous local/remote changes and stops instead of overwriting either side.
+- Snapshots are created before destructive remote-to-local operations and restore.
 - Snapshot retention is controlled by `max_snapshots`.
-- Manual operations are available through the add-on Ingress endpoints.
-- History cleanup is deliberately opt-in via `history_cleanup: true`.
+- Dry-run is available.
+- Exclusion lists and secret scanning protect the live repository.
+- Manual operations are exposed through add-on Ingress.
+- History cleanup is opt-in and intended for previously transferred secret paths.
