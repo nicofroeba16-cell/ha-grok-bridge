@@ -16,4 +16,3 @@ options:
 schema:
   poll_interval: int
   config_repo: str
-image: "ghcr.io/nicofroeba16-cell/ha-grok-bridge"
