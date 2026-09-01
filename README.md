@@ -4,42 +4,44 @@ Home Assistant add-on for controlled bidirectional synchronization of `/config` 
 
 ## Funktionen
 
-- Home Assistant `/config` -> GitHub
-- GitHub -> Home Assistant `/config`
-- bidirektionaler Synchronisationsmodus
+- HA `/config` -> GitHub
+- GitHub -> HA `/config`
+- bidirektionaler Sync
 - Konflikterkennung bei Änderungen auf beiden Seiten
-- lokale, zeitgestempelte Snapshots
-- automatische Snapshot-Begrenzung und Bereinigung
-- Snapshot-Restore
-- Dry-Run-Modus
+- zeitgestempelte lokale Snapshots
+- Snapshot-Limit und automatische Bereinigung
+- Snapshot-Restore mit Sicherheits-Snapshot davor
+- Dry-Run
 - konfigurierbare Ausschlusslisten
-- Secret-Scan vor jedem Push
-- Schutz von SSH-, Lock-, Datenbank-, Log- und Laufzeitdateien
-- Initial-Sync HA -> GitHub oder GitHub -> HA
-- manuelle Synchronisation über Add-on-Webinterface/Ingress
-- Status-/Health-Datei unter `/data/status.json`
-- Status-Endpunkt `/status`
-- Snapshot-Liste `/snapshots`
-- Restore über `/restore/<snapshot>`
-- History-Cleanup für versehentlich übertragene Secret-Pfade, nur bei explizit aktivierter Option
-- Lock gegen parallele Synchronisationen
-- saubere Behandlung gelöschter Dateien
+- Secret-Scan vor Push
+- Schutz für SSH-, Lock-, Datenbank-, Log- und Laufzeitdateien
+- Initial-Sync in beide Richtungen
+- manuelle Sync-/Restore-Aktionen über Add-on Ingress
+- Health-/Statusdatei `/data/status.json`
+- Lock gegen parallele Syncs
+- saubere Erkennung gelöschter Dateien
+- opt-in History-Cleanup für versehentlich übertragene Secret-Pfade
 
-## Webinterface-Endpunkte
+## Manuelle API
 
-- `GET /status`
-- `GET /snapshots`
-- `POST /sync/up`
-- `POST /sync/down`
-- `POST /restore/<snapshot>`
-- `POST /history-cleanup`
+`GET /status`
+
+`GET /snapshots`
+
+`POST /sync/up`
+
+`POST /sync/down`
+
+`POST /restore/<snapshot>`
+
+`POST /history-cleanup`
 
 ## Sicherheit
 
-Private Schlüssel, Passphrasen, `secrets.yaml`, `.storage`, `.ssh`, Datenbanken, Logs, Locks und weitere Laufzeitdaten werden standardmäßig nicht synchronisiert. Der Secret-Scan blockiert einen Push, wenn verdächtige Geheimnisse erkannt werden.
+Private Schlüssel, Passphrasen, `secrets.yaml`, `.storage`, `.ssh`, `.cache`, Datenbanken, Logs, Locks und weitere Laufzeitdaten werden standardmäßig ausgeschlossen. Ein Secret-Scan blockiert verdächtige Inhalte vor dem Commit/Push.
 
 ## Installation
 
-Repository: https://github.com/nicofroeba16-cell/ha-grok-bridge
+Add-on-Repository: https://github.com/nicofroeba16-cell/ha-grok-bridge
 
-Zielrepository für die Konfiguration: https://github.com/nicofroeba16-cell/ha-grok-bridge-live
+Konfigurationsziel: https://github.com/nicofroeba16-cell/ha-grok-bridge-live
