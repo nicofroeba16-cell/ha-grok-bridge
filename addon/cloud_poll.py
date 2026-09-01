@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Add-on-Poller 0.2.3. Nur Git command.json, lokal /config. Keine HTTP-API."""
+"""Add-on-Poller 0.2.4. Nur Git command.json, lokal /config. Keine HTTP-API."""
 import json
 import os
 import subprocess
@@ -13,7 +13,7 @@ RESULT_LOCAL = HOME / "result.json"
 CLONE = HOME / "bridge-push"
 OPTIONS = Path("/data/options.json")
 DEFAULT_REPO = "git@github.com:nicofroeba16-cell/ha-grok-bridge.git"
-VERSION = "0.2.3"
+VERSION = "0.2.4"
 
 ALLOWED_PREFIXES = (
     "ha info",
