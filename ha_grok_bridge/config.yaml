@@ -1,6 +1,6 @@
 name: HA File Sync Bridge
-version: "1.0.0"
-description: Bidirectional Home Assistant /config synchronization with GitHub, snapshots, conflict detection, restore and secret protection
+version: "1.0.1"
+description: Bidirectional Home Assistant /config synchronization with GitHub, snapshots, conflict detection, restore, dry-run and secret protection
 slug: ha_grok_bridge
 url: https://github.com/nicofroeba16-cell/ha-grok-bridge
 arch:
