@@ -1,0 +1,39 @@
+name: "HA File Sync Bridge"
+version: "0.5.0"
+slug: ha_grok_bridge
+description: "Structured Git synchronization for approved Home Assistant configuration files."
+url: "https://github.com/nicofroeba16-cell/ha-grok-bridge"
+arch:
+  - aarch64
+  - amd64
+init: false
+startup: services
+boot: manual
+hassio_api: true
+homeassistant_api: false
+host_network: false
+backup_exclude:
+  - bridge-work
+  - backups
+  - last_request_id
+map:
+  - type: homeassistant_config
+    read_only: false
+    path: /config
+  - type: ssl
+    read_only: true
+    path: /ssl
+options:
+  poll_interval: 60
+  config_repo: "git@github.com:nicofroeba16-cell/ha-grok-bridge-live.git"
+  control_branch: "bridge-control"
+  snapshot_branch: "live-snapshot"
+  status_branch: "bridge-status"
+  main_branch: "main"
+schema:
+  poll_interval: int(15,3600)
+  config_repo: str
+  control_branch: str
+  snapshot_branch: str
+  status_branch: str
+  main_branch: str
