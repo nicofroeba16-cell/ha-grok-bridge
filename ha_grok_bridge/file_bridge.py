@@ -267,7 +267,7 @@ def deploy_stage(c, previous_snapshot=None):
             shutil.rmtree(STAGE, ignore_errors=True)
 
 
-def push(branch, dry, c):
+def push(branch, dry, c, message=None):
     tracked = tracked_excluded(c)
     if tracked:
         log(f"excluded cleanup: {len(tracked)} tracked runtime path(s) excluded")
@@ -282,7 +282,7 @@ def push(branch, dry, c):
         return True, git(["rev-parse", "HEAD"]).stdout.strip()
     git(["config", "user.name", "HA File Sync Bridge"])
     git(["config", "user.email", "ha-file-sync-bridge@localhost"])
-    git(["commit", "-m", f"Sync Home Assistant /config - {now()}"])
+    git(["commit", "-m", message or f"Sync Home Assistant /config - {now()}"])
     head = git(["rev-parse", "HEAD"]).stdout.strip()
     git(["push", "origin", branch])
     git(["fetch", "--prune", "origin"])
