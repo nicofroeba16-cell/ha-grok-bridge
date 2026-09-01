@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib,http.server,json,os,re,shutil,subprocess,threading,time
 from datetime import datetime,timezone
 from pathlib import Path
-VERSION="1.0.5"; DATA=Path("/data"); CONFIG=Path("/config"); WORK=DATA/"bridge-work"; SNAPSHOTS=DATA/"snapshots"; OPTIONS=DATA/"options.json"; STATE=DATA/"state.json"; STATUS=DATA/"status.json"; LOCK=DATA/"sync.lock"; PORT=8099
+VERSION="1.0.6"; DATA=Path("/data"); CONFIG=Path("/config"); WORK=DATA/"bridge-work"; SNAPSHOTS=DATA/"snapshots"; OPTIONS=DATA/"options.json"; STATE=DATA/"state.json"; STATUS=DATA/"status.json"; LOCK=DATA/"sync.lock"; PORT=8099
 DEFAULT_EXCLUDED_NAMES={".git",".storage",".cloud",".HA_VERSION",".ssh",".cache","secrets.yaml","home-assistant_v2.db","home-assistant_v2.db-shm","home-assistant_v2.db-wal","home-assistant_v2.db-journal","home-assistant.log","home-assistant.log.1","home-assistant.log.fault"}
 DEFAULT_EXCLUDED_DIRS={"tts","media","backups"}; DEFAULT_EXCLUDED_SUFFIXES={".passphrase",".pem",".key",".p12",".pfx"}
 SENSITIVE_NAMES={"secrets.yaml",".env",".env.local",".env.production",".env.development","credentials.json","credentials.yaml","token.json","service-account.json","ha-grok-bridge.passphrase","ha-file-sync-bridge.passphrase"}; SENSITIVE_SUFFIXES=DEFAULT_EXCLUDED_SUFFIXES
@@ -59,10 +59,11 @@ def to_work(c):
   if excluded(s.name,c): continue
   d=WORK/s.name; shutil.copytree(s,d,ignore=ignore(c)) if s.is_dir() else shutil.copy2(s,d); n+=1
  return n
-def tracked_sensitive():
+def tracked_sensitive(c):
  out=[]
  for x in git(["ls-files"]).stdout.splitlines():
   p=Path(x)
+  if ignored(p,c): continue
   if any(q in SENSITIVE_NAMES or q.endswith(tuple(SENSITIVE_SUFFIXES)) for q in p.parts): out.append(x)
  return out
 def secret_scan(c):
@@ -115,7 +116,7 @@ def sync(c,forced=None):
     if p.name==".git" or excluded(p.name,c): continue
     d=CONFIG/p.name; shutil.rmtree(d) if d.exists() and d.is_dir() else (d.unlink() if d.exists() else None); shutil.copytree(p,d,ignore=ignore(c)) if p.is_dir() else shutil.copy2(p,d)
   elif mode in {"ha_to_git","bidirectional"} and (lc or not last):
-   ts=tracked_sensitive()
+   ts=tracked_sensitive(c)
    if ts: raise RuntimeError(f"SECURITY BLOCKED: tracked sensitive path: {ts[0]}")
    snapshot(c); log(f"/config prepared: {to_work(c)} items"); f=secret_scan(c)
    if f: raise RuntimeError(f"SECRET SCAN BLOCKED: {len(f)} finding(s): {', '.join(f[:5])}")
