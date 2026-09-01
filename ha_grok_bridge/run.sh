@@ -8,7 +8,6 @@ APP_DIR="/opt/ha-file-sync-bridge"
 log "HA File Sync Bridge Add-on $VERSION"
 [[ -f "$KEY_SOURCE" ]] || { log "FATAL SSH-Key fehlt: $KEY_SOURCE"; exit 1; }
 [[ -f "$APP_DIR/file_bridge.py" ]] || { log "FATAL file_bridge.py fehlt: $APP_DIR/file_bridge.py"; exit 1; }
-[[ -f "$APP_DIR/ai_control.py" ]] || { log "FATAL ai_control.py fehlt: $APP_DIR/ai_control.py"; exit 1; }
 mkdir -p /data/ssh /data/.ssh
 cp -f "$KEY_SOURCE" "$KEY_DEST"
 chmod 600 "$KEY_DEST"
