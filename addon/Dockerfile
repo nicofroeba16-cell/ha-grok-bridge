@@ -2,23 +2,18 @@ ARG BUILD_FROM
 FROM $BUILD_FROM
 
 ENV LANG=C.UTF-8
+WORKDIR /opt/ha-file-sync-bridge
 
 RUN apk add --no-cache \
     python3 \
+    py3-yaml \
     git \
-    openssh-client \
-    curl \
-    bash
+    openssh-client
 
-WORKDIR /opt/ha-grok-bridge
-
-COPY cloud_poll.py /opt/ha-grok-bridge/cloud_poll.py
-COPY ha /usr/local/bin/ha
+COPY file_bridge.py /opt/ha-file-sync-bridge/file_bridge.py
 COPY run.sh /run.sh
+COPY known_hosts /opt/ha-file-sync-bridge/known_hosts
 
-RUN chmod a+x /run.sh /usr/local/bin/ha \
-    && ln -sf /usr/local/bin/ha /usr/bin/ha
+RUN chmod 0755 /run.sh /opt/ha-file-sync-bridge/file_bridge.py
 
-# Base-Image ENTRYPOINT ist s6-overlay-suexec — muss weg.
 ENTRYPOINT ["/run.sh"]
-CMD []
