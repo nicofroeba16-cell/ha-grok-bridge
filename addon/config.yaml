@@ -1,7 +1,7 @@
-name: "HA Grok Bridge"
-version: "0.3.2"
+name: "HA File Sync Bridge"
+version: "0.5.0"
 slug: ha_grok_bridge
-description: "Pollt command.json und führt Whitelist-Befehle lokal auf /config aus. Ersatz für ki2. Keine HTTP-API."
+description: "Structured Git synchronization for approved Home Assistant configuration files."
 url: "https://github.com/nicofroeba16-cell/ha-grok-bridge"
 arch:
   - aarch64
@@ -9,15 +9,12 @@ arch:
 init: false
 startup: services
 boot: manual
-hassio_api: true
-hassio_role: manager
 homeassistant_api: false
 host_network: false
 backup_exclude:
-  - ssh
-  - .ssh
-  - last_id
-  - bridge-push
+  - bridge-work
+  - backups
+  - last_request_id
 map:
   - type: homeassistant_config
     read_only: false
@@ -26,8 +23,16 @@ map:
     read_only: true
     path: /ssl
 options:
-  poll_interval: 15
-  git_repo: "git@github.com:nicofroeba16-cell/ha-grok-bridge.git"
+  poll_interval: 60
+  config_repo: "git@github.com:nicofroeba16-cell/ha-grok-bridge-live.git"
+  control_branch: "bridge-control"
+  snapshot_branch: "live-snapshot"
+  status_branch: "bridge-status"
+  main_branch: "main"
 schema:
-  poll_interval: int(5,120)
-  git_repo: str
+  poll_interval: int(15,3600)
+  config_repo: str
+  control_branch: str
+  snapshot_branch: str
+  status_branch: str
+  main_branch: str
