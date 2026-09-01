@@ -9,6 +9,7 @@ arch:
 init: false
 startup: services
 boot: manual
+hassio_api: true
 homeassistant_api: false
 host_network: false
 backup_exclude:
