@@ -1,48 +1,25 @@
-#!/bin/bash
-# 0.3.3 – Git + kontrollierter File Transfer
-set -euo pipefail
+#!/bin/sh
+set -eu
 
-log() { echo "[bridge] $*"; }
+KEY_SOURCE_NEW=/ssl/ha-file-sync-bridge
+KEY_SOURCE_OLD=/ssl/ha-grok-bridge-new
+KEY_DEST=/data/ssh/id_ed25519
 
-VERSION="0.3.3"
-KEY_SOURCE="/ssl/ha-grok-bridge-new"
-
-log "HA Grok Bridge Add-on $VERSION – Git + File Transfer"
+if [ -f "$KEY_SOURCE_NEW" ]; then
+  KEY_SOURCE="$KEY_SOURCE_NEW"
+elif [ -f "$KEY_SOURCE_OLD" ]; then
+  KEY_SOURCE="$KEY_SOURCE_OLD"
+else
+  echo "[file-bridge] FATAL: SSH key missing at $KEY_SOURCE_NEW or $KEY_SOURCE_OLD"
+  exit 1
+fi
 
 mkdir -p /data/ssh /data/.ssh
-cp -f /ssl/ha-grok-bridge-new /data/ssh/id_ed25519
-chmod 600 /data/ssh/id_ed25519
-ssh-keyscan -H github.com > /data/.ssh/known_hosts 2>/dev/null || true
-chmod 600 /data/.ssh/known_hosts
+cp "$KEY_SOURCE" "$KEY_DEST"
+chmod 600 "$KEY_DEST"
 chmod 700 /data/ssh /data/.ssh
+cp /opt/ha-file-sync-bridge/known_hosts /data/.ssh/known_hosts
+chmod 600 /data/.ssh/known_hosts
 
-if [[ ! -f "$KEY_SOURCE" ]]; then
-  log "FATAL SSH-Key fehlt: $KEY_SOURCE"
-  exit 1
-fi
-
-cp -f "$KEY_SOURCE" /data/ssh/id_ed25519
-chmod 600 /data/ssh/id_ed25519
-
-ssh-keyscan -t rsa,ecdsa,ed25519 github.com \
-  > /data/.ssh/known_hosts 2>/dev/null || true
-chmod 600 /data/.ssh/known_hosts || true
-
-export GIT_SSH_COMMAND="ssh -i /data/ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/data/.ssh/known_hosts -o BatchMode=yes"
-
-log "Git-SSH-Key: /data/ssh/id_ed25519 (von $KEY_SOURCE)"
-log "GIT_SSH_COMMAND: expliziter Add-on-Key"
-
-if [[ ! -d /config && -d /homeassistant ]]; then
-  ln -sfn /homeassistant /config
-fi
-
-if [[ ! -d /config ]]; then
-  log "FATAL /config nicht gemappt"
-  exit 1
-fi
-
-log "/config ok"
-
-log "Starte cloud_poll.py ..."
-exec python3 /opt/ha-grok-bridge/cloud_poll.py
+export GIT_SSH_COMMAND="ssh -i $KEY_DEST -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/data/.ssh/known_hosts"
+exec python3 /opt/ha-file-sync-bridge/file_bridge.py
