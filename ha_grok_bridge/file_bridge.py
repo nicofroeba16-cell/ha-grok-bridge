@@ -16,21 +16,11 @@ WORK = DATA / "bridge-work"
 SNAPSHOTS = DATA / "snapshots"
 OPTIONS = DATA / "options.json"
 
-# Files/directories that are runtime state, secrets, credentials, or large databases.
-# They must never be copied into the Git repository by the automatic HA -> Git sync.
 EXCLUDED_NAMES = {
-    ".git",
-    ".storage",
-    ".cloud",
-    ".HA_VERSION",
-    "home-assistant.log",
-    "home-assistant.log.1",
-    "home-assistant.log.fault",
-    "home-assistant_v2.db",
-    "home-assistant_v2.db-shm",
-    "home-assistant_v2.db-wal",
-    "home-assistant_v2.db-journal",
-    "secrets.yaml",
+    ".git", ".storage", ".cloud", ".HA_VERSION",
+    "home-assistant.log", "home-assistant.log.1", "home-assistant.log.fault",
+    "home-assistant_v2.db", "home-assistant_v2.db-shm", "home-assistant_v2.db-wal",
+    "home-assistant_v2.db-journal", "secrets.yaml",
 }
 EXCLUDED_DIRS = {"tts", "media", "backups"}
 
@@ -39,29 +29,15 @@ def log(message: str) -> None:
     print(f"[file-bridge] {message}", flush=True)
 
 
-def run_git(
-    args: list[str],
-    cwd: Path = WORK,
-    check: bool = True,
-) -> subprocess.CompletedProcess[str]:
+def run_git(args: list[str], cwd: Path = WORK, check: bool = True) -> subprocess.CompletedProcess[str]:
     log(f"git command: git {' '.join(args)}")
-    process = subprocess.run(
-        ["git", *args],
-        cwd=cwd,
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=180,
-    )
+    process = subprocess.run(["git", *args], cwd=cwd, check=False, capture_output=True, text=True, timeout=180)
     if process.stdout.strip():
         log(f"git stdout: {process.stdout.strip()}")
     if process.stderr.strip():
         log(f"git stderr: {process.stderr.strip()}")
     if check and process.returncode != 0:
-        raise RuntimeError(
-            f"git exited with {process.returncode}: "
-            f"{process.stderr.strip() or process.stdout.strip()}"
-        )
+        raise RuntimeError(f"git exited with {process.returncode}: {process.stderr.strip() or process.stdout.strip()}")
     return process
 
 
@@ -100,9 +76,11 @@ def validate() -> tuple[bool, str]:
     if not (WORK / ".git").is_dir():
         return False, "repository not initialized"
     process = run_git(["fsck", "--no-progress"], check=False)
-    if process.returncode == 0:
-        return True, "repository valid"
-    return False, "repository invalid"
+    return (process.returncode == 0, "repository valid" if process.returncode == 0 else "repository invalid")
+
+
+def ignore_config(directory: str, names: list[str]) -> set[str]:
+    return {name for name in names if name in EXCLUDED_NAMES or name in EXCLUDED_DIRS}
 
 
 def snapshot() -> Path | None:
@@ -112,14 +90,6 @@ def snapshot() -> Path | None:
     target = SNAPSHOTS / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     shutil.copytree(CONFIG, target, ignore=ignore_config)
     return target
-
-
-def ignore_config(directory: str, names: list[str]) -> set[str]:
-    ignored: set[str] = set()
-    for name in names:
-        if name in EXCLUDED_NAMES or name in EXCLUDED_DIRS:
-            ignored.add(name)
-    return ignored
 
 
 def sync_config_to_worktree() -> int:
@@ -150,36 +120,13 @@ def sync_to_github(branch: str) -> bool:
     if not changes:
         log("/config unchanged; nothing to commit")
         return False
-
     run_git(["config", "user.name", "HA File Sync Bridge"], cwd=WORK)
-    run_git(
-        ["config", "user.email", "ha-file-sync-bridge@localhost"],
-        cwd=WORK,
-    )
+    run_git(["config", "user.email", "ha-file-sync-bridge@localhost"], cwd=WORK)
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     run_git(["commit", "-m", f"Sync Home Assistant /config - {timestamp}"], cwd=WORK)
     run_git(["push", "origin", branch], cwd=WORK)
     log("HA /config synchronized to GitHub")
     return True
-
-
-def status() -> dict[str, Any]:
-    result: dict[str, Any] = {
-        "version": VERSION,
-        "time": datetime.now(timezone.utc).isoformat(),
-        "repository": str(WORK),
-        "config": str(CONFIG),
-    }
-    if (WORK / ".git").is_dir():
-        result["git_status"] = run_git(
-            ["status", "--short"], cwd=WORK, check=False
-        ).stdout.splitlines()
-    else:
-        result["git_status"] = None
-    result["snapshots"] = (
-        len(list(SNAPSHOTS.iterdir())) if SNAPSHOTS.is_dir() else 0
-    )
-    return result
 
 
 def main() -> None:
@@ -195,7 +142,6 @@ def main() -> None:
             if not ok:
                 raise RuntimeError(message)
             log("repository access OK")
-
             if bool(cfg.get("sync_config_to_git", True)):
                 snapshot()
                 sync_to_github(branch)
