@@ -19,4 +19,6 @@ COPY run.sh /run.sh
 RUN chmod a+x /run.sh /usr/local/bin/ha \
     && ln -sf /usr/local/bin/ha /usr/bin/ha
 
-CMD ["/run.sh"]
+# Base-Image ENTRYPOINT ist s6-overlay-suexec — muss weg.
+ENTRYPOINT ["/run.sh"]
+CMD []
