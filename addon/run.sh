@@ -1,10 +1,10 @@
 #!/bin/bash
-# 0.3.0 — kein s6/with-contenv (init: false).
+# 0.3.1 — kein s6/with-contenv (init: false).
 set -euo pipefail
 
 log() { echo "[bridge] $*" ; }
 
-log "HA Grok Bridge Add-on 0.3.0 — nur Git, keine API"
+log "HA Grok Bridge Add-on 0.3.1 — nur Git, keine API"
 
 mkdir -p /data/ssh /data/.ssh
 chmod 700 /data/ssh /data/.ssh
@@ -21,11 +21,12 @@ fi
 if [[ -z "$KEY" ]]; then
   log "WARN kein Git-SSH-Key"
 else
-  # Kein export GIT_SSH_COMMAND — sonst erbt git -C /config den Deploy-Key
-  # und kann HA-CONFIG nicht pushen. Key nur in cloud_poll git_env().
-  chmod 600 "$KEY" 2>/dev/null || true
-  log "Git-SSH-Key: $KEY (nur Bridge-Repo)"
+  cp -f "$KEY" /data/ssh/id_ed25519
+  chmod 600 /data/ssh/id_ed25519
+  log "Git-SSH-Key: /data/ssh/id_ed25519 (von $KEY)"
 fi
+
+rm -rf /data/bridge-push
 
 ssh-keyscan -t rsa,ecdsa,ed25519 github.com >> /data/.ssh/known_hosts 2>/dev/null || true
 chmod 600 /data/.ssh/known_hosts || true
