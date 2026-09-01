@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 log(){ echo "[file-bridge] $*"; }
-VERSION="0.5.1"
+VERSION="0.5.2"
 KEY_SOURCE="/ssl/ha-grok-bridge"
 KEY_DEST="/data/ssh/id_ed25519"
 APP_DIR="/opt/ha-file-sync-bridge"
