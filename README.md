@@ -2,4 +2,17 @@
 
 Home Assistant add-on for controlled bidirectional synchronization of `/config` with GitHub.
 
-The 1.0.0 implementation includes bidirectional sync, conflict detection, snapshots and restore, dry-run, configurable exclusions, secret scanning, initial sync modes, manual Ingress controls, health/status, locking, deletion handling, and opt-in history cleanup.
+1. GitHub -> /config synchronization
+2. Conflict detection
+3. Snapshot restore
+4. Dry-run
+5. Configurable exclusions
+6. Snapshot retention and cleanup
+7. Health/status
+8. Sync locking
+9. Correct deletion handling
+10. Secret scanning
+11. Initial sync direction
+12. Manual sync via Ingress
+13. Add-on status interface
+14. Opt-in history cleanup for accidentally committed secret paths
