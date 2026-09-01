@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib,http.server,json,os,re,shutil,subprocess,threading,time
 from datetime import datetime,timezone
 from pathlib import Path
-VERSION="1.0.3"; DATA=Path("/data"); CONFIG=Path("/config"); WORK=DATA/"bridge-work"; SNAPSHOTS=DATA/"snapshots"; OPTIONS=DATA/"options.json"; STATE=DATA/"state.json"; STATUS=DATA/"status.json"; LOCK=DATA/"sync.lock"; PORT=8099
+VERSION="1.0.4"; DATA=Path("/data"); CONFIG=Path("/config"); WORK=DATA/"bridge-work"; SNAPSHOTS=DATA/"snapshots"; OPTIONS=DATA/"options.json"; STATE=DATA/"state.json"; STATUS=DATA/"status.json"; LOCK=DATA/"sync.lock"; PORT=8099
 DEFAULT_EXCLUDED_NAMES={".git",".storage",".cloud",".HA_VERSION",".ssh",".cache","secrets.yaml","home-assistant_v2.db","home-assistant_v2.db-shm","home-assistant_v2.db-wal","home-assistant_v2.db-journal","home-assistant.log","home-assistant.log.1","home-assistant.log.fault"}
 DEFAULT_EXCLUDED_DIRS={"tts","media","backups"}; DEFAULT_EXCLUDED_SUFFIXES={".passphrase",".pem",".key",".p12",".pfx"}
 SENSITIVE_NAMES={"secrets.yaml",".env",".env.local",".env.production",".env.development","credentials.json","credentials.yaml","token.json","service-account.json","ha-grok-bridge.passphrase","ha-file-sync-bridge.passphrase"}; SENSITIVE_SUFFIXES=DEFAULT_EXCLUDED_SUFFIXES
@@ -107,9 +107,6 @@ def sync(c,forced=None):
   if last and lc and rc: raise RuntimeError("SYNC CONFLICT: both sides changed")
   if mode=="git_to_ha" or (mode=="bidirectional" and rc and not lc):
    git(["reset","--hard",f"origin/{b}"]); snapshot(c); log(f"GitHub -> /config: remote prepared")
-   for p in list(WORK.iterdir()):
-    if p.name==".git": continue
-   # WORK is already checked out at origin after reset; copy manually
    names={p.name for p in WORK.iterdir() if p.name!=".git" and not excluded(p.name,c)}
    for p in list(CONFIG.iterdir()):
     if not excluded(p.name,c) and p.name not in names: shutil.rmtree(p) if p.is_dir() else p.unlink()
@@ -152,7 +149,7 @@ class H(http.server.BaseHTTPRequestHandler):
    self.out(404,{"error":"not found"})
   except Exception as e:self.out(400,{"error":str(e)})
 def main():
- DATA.mkdir(parents=True,exist_ok=True); status(state="idle",error=None); log(f"HA File Sync Bridge {VERSION}"); http=http.server.ThreadingHTTPServer(("0.0.0.0",PORT),H)
+ DATA.mkdir(parents=True,exist_ok=True); status(state="idle",error=None); log(f"HA File Sync Bridge {VERSION}"); server=http.server.ThreadingHTTPServer(("0.0.0.0",PORT),H)
  def worker():
   first=True
   while True:
@@ -160,5 +157,5 @@ def main():
     c=cfg(); m=str(c.get("initial_sync","ha_to_git")) if first and not state().get("last_sync_commit") else None; sync(c,m)
    except Exception:pass
    first=False; time.sleep(max(10,int(cfg().get("poll_interval",60))))
- threading.Thread(target=worker,daemon=True).start(); http.serve_forever()
+ threading.Thread(target=worker,daemon=True).start(); server.serve_forever()
 if __name__=="__main__":main()
