@@ -1,6 +1,6 @@
 name: HA File Sync Bridge
 version: "1.0.0"
-description: Synchronizes the active Home Assistant /config to the configured Git repository with snapshots and protected runtime files
+description: Bidirectional Home Assistant /config synchronization with GitHub, snapshots, conflict detection and secret protection
 slug: ha_grok_bridge
 url: https://github.com/nicofroeba16-cell/ha-grok-bridge
 arch:
@@ -9,6 +9,9 @@ arch:
 startup: application
 boot: auto
 init: false
+ingress: true
+ingress_port: 8099
+panel_icon: mdi:sync
 map:
   - type: ssl
     read_only: true
@@ -19,9 +22,25 @@ options:
   poll_interval: 60
   config_repo: git@github.com:nicofroeba16-cell/ha-grok-bridge-live.git
   branch: main
-  sync_config_to_git: true
+  sync_mode: bidirectional
+  initial_sync: ha_to_git
+  dry_run: false
+  max_snapshots: 10
+  exclude_names: .git,.storage,.cloud,.HA_VERSION,.ssh,.cache,secrets.yaml,home-assistant_v2.db,home-assistant_v2.db-shm,home-assistant_v2.db-wal,home-assistant_v2.db-journal,home-assistant.log,home-assistant.log.1,home-assistant.log.fault
+  exclude_dirs: tts,media,backups
+  exclude_suffixes: .passphrase,.pem,.key,.p12,.pfx
+  secret_scan: true
+  history_cleanup: false
 schema:
   poll_interval: int
   config_repo: str
   branch: str
-  sync_config_to_git: bool
+  sync_mode: list(bidirectional|ha_to_git|git_to_ha)
+  initial_sync: list(ha_to_git|git_to_ha)
+  dry_run: bool
+  max_snapshots: int
+  exclude_names: str
+  exclude_dirs: str
+  exclude_suffixes: str
+  secret_scan: bool
+  history_cleanup: bool
