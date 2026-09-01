@@ -1,7 +1,7 @@
 configuration:
   poll_interval:
     name: Poll-Intervall
-    description: Sekunden zwischen den Checks von command.json
-  git_repo:
-    name: Git-Remote
-    description: SSH-URL des Bridge-Repos (command.json / result.json)
+    description: Sekunden zwischen den Synchronisationsprüfungen
+  config_repo:
+    name: Git-Repository
+    description: SSH-URL des Konfigurations-Repositories
