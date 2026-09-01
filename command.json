@@ -1,4 +1,4 @@
 {
-  "id": "ha-20260901-051600-inf4",
-  "command": "ha core info"
+  "id": "ha-20260901-055200-liv1",
+  "command": "git -C /config add -- zuhause.yaml timo.yaml configuration.yaml apple.yaml apple-optik.js deploy.sh apply_updates.py dashboards/zuhause.yaml dashboards/timo.yaml themes/apple.yaml && git -C /config commit -m live-sync-tracked || true && git -C /config push origin main"
 }
