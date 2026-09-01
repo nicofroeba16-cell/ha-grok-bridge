@@ -11,9 +11,6 @@ WORK = DATA / 'bridge-work'
 SNAPSHOTS = DATA / 'snapshots'
 OPTIONS = DATA / 'options.json'
 
-def now() -> str:
-    return datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
-
 def log(message: str) -> None:
     print(f'[file-bridge] {message}', flush=True)
 
@@ -27,12 +24,16 @@ def run_git(args: list[str], cwd: Path = WORK, check: bool = True) -> subprocess
     return p
 
 def load_options() -> dict[str, Any]:
-    defaults = {'poll_interval': 60, 'config_repo': 'git@github.com:nicofroeba16-cell/ha-grok-bridge-live.git'}
+    defaults = {
+        'poll_interval': 60,
+        'config_repo': 'git@github.com:nicofroeba16-cell/ha-grok-bridge-live.git',
+    }
     if OPTIONS.is_file():
         try:
             value = json.loads(OPTIONS.read_text())
             if isinstance(value, dict): defaults.update(value)
-        except Exception as exc: log(f'options warning: {exc}')
+        except Exception as exc:
+            log(f'options warning: {exc}')
     return defaults
 
 def ensure_repo(repo_url: str) -> None:
@@ -80,14 +81,14 @@ def rollback(snapshot_path: Path) -> None:
         else: shutil.copy2(item, destination)
 
 def status() -> dict[str, Any]:
-    result: dict[str, Any] = {'time': now(), 'repository': str(WORK), 'config': str(CONFIG)}
+    result: dict[str, Any] = {'time': datetime.now(timezone.utc).isoformat(), 'repository': str(WORK), 'config': str(CONFIG)}
     if (WORK / '.git').is_dir(): result['git_status'] = run_git(['status', '--short'], check=False).stdout.splitlines()
     else: result['git_status'] = None
     result['snapshots'] = len(list(SNAPSHOTS.iterdir())) if SNAPSHOTS.is_dir() else 0
     return result
 
 def main() -> None:
-    log('HA File Sync Bridge 0.5.1')
+    log('HA File Sync Bridge 0.5.3')
     while True:
         try:
             cfg = load_options()
