@@ -16,6 +16,6 @@ cp -f "$APP_DIR/known_hosts" /data/.ssh/known_hosts
 chmod 600 /data/.ssh/known_hosts
 export GIT_SSH_COMMAND="ssh -i $KEY_DEST -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/data/.ssh/known_hosts"
 log "SSH-Key verfügbar: $KEY_SOURCE"
-log "Verwende neuen passphraselosen SSH-Key"
+log "Verwende passphraselosen SSH-Key"
 log "Starte file_bridge.py ..."
 exec python3 "$APP_DIR/file_bridge.py"
