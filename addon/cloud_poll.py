@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Add-on-Poller 0.3.0. Nur Git command.json, lokal /config. Keine HTTP-API."""
+"""Add-on-Poller 0.3.1. Nur Git command.json, lokal /config. Keine HTTP-API."""
 import json
 import os
 import shutil
@@ -14,7 +14,7 @@ RESULT_LOCAL = HOME / "result.json"
 CLONE = HOME / "bridge-push"
 OPTIONS = Path("/data/options.json")
 DEFAULT_REPO = "git@github.com:nicofroeba16-cell/ha-grok-bridge.git"
-VERSION = "0.3.0"
+VERSION = "0.3.1"
 
 ALLOWED_PREFIXES = (
     "ha info",
@@ -85,7 +85,7 @@ def git_env():
     env.setdefault("GIT_COMMITTER_NAME", "ha-grok-bridge")
     env.setdefault("GIT_COMMITTER_EMAIL", "bridge@local")
     key = None
-    for cand in ("/ssl/ha-grok-bridge", "/data/ssh/id_ed25519", "/data/ssh/id_rsa"):
+    for cand in ("/data/ssh/id_ed25519", "/ssl/ha-grok-bridge", "/data/ssh/id_rsa"):
         if Path(cand).is_file():
             key = cand
             break
