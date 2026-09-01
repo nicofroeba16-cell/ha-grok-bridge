@@ -1,6 +1,6 @@
 name: HA File Sync Bridge
-version: "1.0.7"
-description: Bidirectional Home Assistant /config synchronization with GitHub, snapshots, conflict detection, restore, single-file writes and secret protection
+version: "1.0.8"
+description: Autonomous bidirectional Home Assistant /config synchronization with GitHub, automatic GitHub-to-HA deployment, snapshots, rollback, conflict detection, arbitrary file writes and secret protection
 slug: ha_grok_bridge
 url: https://github.com/nicofroeba16-cell/ha-grok-bridge
 arch:
@@ -31,6 +31,8 @@ options:
   exclude_suffixes: .passphrase,.pem,.key,.p12,.pfx
   secret_scan: true
   history_cleanup: false
+  deploy_on_remote_change: true
+  rollback_on_error: true
 schema:
   poll_interval: int
   config_repo: str
@@ -44,3 +46,5 @@ schema:
   exclude_suffixes: str
   secret_scan: bool
   history_cleanup: bool
+  deploy_on_remote_change: bool
+  rollback_on_error: bool
