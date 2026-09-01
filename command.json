@@ -1,4 +1,4 @@
 {
-  "id": "ha-20260901-020100-r8k3",
-  "command": "ha core restart"
+  "id": "ha-20260901-032800-inf1",
+  "command": "ha core info"
 }
