@@ -1,0 +1,19 @@
+name: HA Grok Bridge
+version: "0.5.0"
+description: HA Grok Bridge file synchronization service
+slug: ha_grok_bridge
+url: https://github.com/nicofroeba16-cell/ha-grok-bridge
+arch:
+  - amd64
+  - aarch64
+  - armv7
+startup: application
+boot: auto
+init: false
+options:
+  poll_interval: 60
+  config_repo: git@github.com:nicofroeba16-cell/ha-grok-bridge-live.git
+schema:
+  poll_interval: int
+  config_repo: str
+image: "ghcr.io/nicofroeba16-cell/ha-grok-bridge"
