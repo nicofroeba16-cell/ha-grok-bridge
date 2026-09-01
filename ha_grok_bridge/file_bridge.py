@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "1.0.9"
+VERSION = "1.10"
 DATA = Path("/data")
 CONFIG = Path("/config")
 WORK = DATA / "bridge-work"
@@ -40,29 +40,45 @@ def now():
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
-def log(s):
-    print(f"[file-bridge] {s}", flush=True)
+def log(message):
+    print(f"[file-bridge] {message}", flush=True)
 
 
-def load(p, default):
+def load(path, default):
     try:
-        v = json.loads(p.read_text(encoding="utf-8")) if p.is_file() else default
-        return v if isinstance(v, dict) else default
+        value = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else default
+        return value if isinstance(value, dict) else default
     except Exception:
         return default
 
 
-def save(p, value):
-    p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(p.suffix + ".tmp")
+def save(path, value):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(value, indent=2, sort_keys=True), encoding="utf-8")
-    tmp.replace(p)
+    tmp.replace(path)
 
 
 def cfg():
-    d = {"poll_interval": 60, "config_repo": "git@github.com:nicofroeba16-cell/ha-grok-bridge-live.git", "branch": "main", "sync_mode": "bidirectional", "initial_sync": "ha_to_git", "dry_run": False, "max_snapshots": 10, "exclude_names": ",".join(sorted(DEFAULT_EXCLUDED_NAMES)), "exclude_dirs": ",".join(sorted(DEFAULT_EXCLUDED_DIRS)), "exclude_suffixes": ",".join(sorted(DEFAULT_EXCLUDED_SUFFIXES)), "secret_scan": True, "history_cleanup": False, "deploy_on_remote_change": True, "rollback_on_error": True}
-    d.update(load(OPTIONS, {}))
-    return d
+    defaults = {
+        "poll_interval": 60,
+        "config_repo": "git@github.com:nicofroeba16-cell/ha-grok-bridge-live.git",
+        "branch": "main",
+        "sync_mode": "bidirectional",
+        "initial_sync": "ha_to_git",
+        "dry_run": False,
+        "max_snapshots": 10,
+        "exclude_names": ",".join(sorted(DEFAULT_EXCLUDED_NAMES)),
+        "exclude_dirs": ",".join(sorted(DEFAULT_EXCLUDED_DIRS)),
+        "exclude_suffixes": ",".join(sorted(DEFAULT_EXCLUDED_SUFFIXES)),
+        "secret_scan": True,
+        "history_cleanup": False,
+        "deploy_on_remote_change": True,
+        "rollback_on_error": True,
+        "auto_reload": False,
+    }
+    defaults.update(load(OPTIONS, {}))
+    return defaults
 
 
 def csv(value, fallback):
@@ -70,7 +86,7 @@ def csv(value, fallback):
 
 
 def excluded(name, c):
-    return name in csv(c.get("exclude_names"), DEFAULT_EXCLUDED_NAMES) or name in csv(c.get("exclude_dirs"), DEFAULT_EXCLUDED_DIRS) or any(name.endswith(x) for x in csv(c.get("exclude_suffixes"), DEFAULT_EXCLUDED_SUFFIXES))
+    return name in csv(c.get("exclude_names"), DEFAULT_EXCLUDED_NAMES) or name in csv(c.get("exclude_dirs"), DEFAULT_EXCLUDED_DIRS) or any(name.endswith(s) for s in csv(c.get("exclude_suffixes"), DEFAULT_EXCLUDED_SUFFIXES))
 
 
 def ignored(path, c):
@@ -110,9 +126,9 @@ def treehash(root, c):
     if not root.is_dir():
         return h.hexdigest()
     for p in sorted(root.rglob("*")):
-        r = p.relative_to(root)
-        if p.is_file() and not ignored(r, c):
-            h.update(r.as_posix().encode() + b"\0" + p.read_bytes())
+        rel = p.relative_to(root)
+        if p.is_file() and not ignored(rel, c):
+            h.update(rel.as_posix().encode() + b"\0" + p.read_bytes())
     return h.hexdigest()
 
 
@@ -137,29 +153,23 @@ def restore_snapshot(path, c):
     for p in path.iterdir():
         if excluded(p.name, c):
             continue
-        d = CONFIG / p.name
-        shutil.copytree(p, d, ignore=ignore(c)) if p.is_dir() else shutil.copy2(p, d)
+        dst = CONFIG / p.name
+        shutil.copytree(p, dst, ignore=ignore(c)) if p.is_dir() else shutil.copy2(p, dst)
 
 
 def tracked_sensitive(c):
-    out = []
+    result = []
     for item in git(["ls-files"]).stdout.splitlines():
-        p = Path(item)
-        if ignored(p, c):
+        rel = Path(item)
+        if ignored(rel, c):
             continue
-        if any(part in SENSITIVE_NAMES or part.endswith(tuple(csv(c.get("exclude_suffixes"), DEFAULT_EXCLUDED_SUFFIXES))) for part in p.parts):
-            out.append(item)
-    return out
+        if any(part in SENSITIVE_NAMES or part.endswith(tuple(csv(c.get("exclude_suffixes"), DEFAULT_EXCLUDED_SUFFIXES))) for part in rel.parts):
+            result.append(item)
+    return result
 
 
 def tracked_excluded(c):
-    """Return paths that are tracked in Git but forbidden for HA -> Git sync."""
-    out = []
-    for item in git(["ls-files"]).stdout.splitlines():
-        p = Path(item)
-        if ignored(p, c):
-            out.append(item)
-    return out
+    return [item for item in git(["ls-files"]).stdout.splitlines() if ignored(Path(item), c)]
 
 
 def secret_scan(root, c):
@@ -185,8 +195,8 @@ def secret_scan(root, c):
             findings.append(rel.as_posix())
             continue
         if p.suffix.lower() in {".yaml", ".yml", ".json", ".env", ".ini", ".conf", ".cfg", ".toml"}:
-            for m in CONFIG_SECRET_RE.finditer(text):
-                if m.group(1).strip().lower() not in {"changeme", "change-me", "your-token", "your_password", "placeholder", "example", "null", "none"}:
+            for match in CONFIG_SECRET_RE.finditer(text):
+                if match.group(1).strip().lower() not in {"changeme", "change-me", "your-token", "your_password", "placeholder", "example", "null", "none"}:
                     findings.append(rel.as_posix())
                     break
     return sorted(set(findings))
@@ -247,9 +257,9 @@ def deploy_stage(c, previous_snapshot=None):
 
 
 def push(branch, dry, c):
-    excluded_before = tracked_excluded(c)
-    if excluded_before:
-        log(f"excluded cleanup: {len(excluded_before)} tracked runtime path(s) will be removed")
+    tracked = tracked_excluded(c)
+    if tracked:
+        log(f"excluded cleanup: {len(tracked)} tracked runtime path(s) excluded")
     git(["add", "-A"])
     changes = git(["diff", "--cached", "--name-status"]).stdout.splitlines()
     log(f"changes: {len(changes)}")
@@ -299,6 +309,51 @@ def release():
         pass
 
 
+def safe_config_path(raw_path, c):
+    raw = str(raw_path or "").strip().replace("\\", "/")
+    if not raw:
+        raise ValueError("path is required")
+    candidate = Path(raw)
+    if candidate.is_absolute() or any(part in {"", ".", ".."} for part in candidate.parts if part == "..") or ".." in candidate.parts:
+        raise ValueError("invalid relative path")
+    if ignored(candidate, c):
+        raise ValueError("target path is excluded")
+    resolved = (CONFIG / candidate).resolve()
+    root = CONFIG.resolve()
+    if resolved != root and root not in resolved.parents:
+        raise ValueError("target escapes /config")
+    return resolved
+
+
+def write_file(body, c):
+    path = body.get("path")
+    if not path and body.get("directory") is not None:
+        directory = str(body.get("directory") or "").strip("/")
+        filename = str(body.get("filename") or "").strip()
+        path = f"{directory}/{filename}" if directory else filename
+    target = safe_config_path(path, c)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if "content_base64" in body or str(body.get("encoding", "")).lower() == "base64":
+        data = base64.b64decode(str(body.get("content_base64", body.get("content", ""))))
+    else:
+        data = str(body.get("content", "")).encode("utf-8")
+    target.write_bytes(data)
+    return {"ok": True, "path": "/config/" + target.relative_to(CONFIG).as_posix(), "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+
+
+def browse(path_value, c):
+    root = safe_config_path(path_value or ".", c)
+    if not root.exists() or not root.is_dir():
+        raise ValueError("directory not found")
+    items = []
+    for p in sorted(root.iterdir(), key=lambda x: (x.is_file(), x.name.lower())):
+        rel = p.relative_to(CONFIG)
+        if ignored(rel, c):
+            continue
+        items.append({"name": p.name, "path": "/config/" + rel.as_posix(), "type": "directory" if p.is_dir() else "file", "bytes": p.stat().st_size if p.is_file() else None})
+    return {"ok": True, "path": "/config/" + (root.relative_to(CONFIG).as_posix() if root != CONFIG else ""), "items": items}
+
+
 def deploy_remote(c, commit):
     log(f"deployment: preparing GitHub commit {commit[:8]}")
     previous = snapshot(c)
@@ -322,9 +377,10 @@ def sync(c, forced=None):
         log("repo: OK")
         s = state()
         last = s.get("last_sync_commit")
-        local_changed = treehash(CONFIG, c) != s.get("last_config_hash")
+        local_hash = treehash(CONFIG, c)
+        local_changed = bool(last) and local_hash != s.get("last_config_hash")
         remote = remote_head(branch)
-        remote_changed = bool(last and remote != last)
+        remote_changed = bool(last) and remote != last
         if last and local_changed and remote_changed:
             raise RuntimeError("SYNC CONFLICT: both sides changed")
         if mode == "git_to_ha" or (mode == "bidirectional" and remote_changed and not local_changed and bool(c.get("deploy_on_remote_change", True))):
@@ -346,150 +402,76 @@ def sync(c, forced=None):
         save(STATE, {**state(), "last_sync_commit": final, "last_config_hash": treehash(CONFIG, c), "last_success": now(), "last_deployment_commit": final})
         set_status(state="idle", last_sync=final, deployment_commit=final, error=None)
         log("sync complete")
-    except Exception as e:
-        set_status(state="error", error=str(e))
-        log(f"ERROR: {e}")
+        return {"ok": True, "commit": final}
+    except Exception as exc:
+        set_status(state="error", error=str(exc))
+        log(f"ERROR: {exc}")
+        return {"ok": False, "error": str(exc)}
     finally:
         release()
 
 
-def restore(name, c, dry=False):
-    target = SNAPSHOTS / name
-    if not target.is_dir():
-        raise RuntimeError("snapshot not found")
-    if not dry:
-        snapshot(c)
-        restore_snapshot(target, c)
-        if treehash(CONFIG, c) != treehash(target, c):
-            raise RuntimeError("restore verification failed")
-    log(f"snapshot restore {'planned' if dry else 'completed'}: {name}")
-
-
-def safe_config_path(raw, c):
-    if not isinstance(raw, str) or not raw.strip():
-        raise RuntimeError("path is required")
-    raw = raw.strip().replace("\\", "/")
-    p = Path(raw)
-    if p.is_absolute() or any(x in {"", "."} for x in p.parts) or ".." in p.parts:
-        raise RuntimeError("invalid or unsafe path")
-    if ignored(p, c):
-        raise RuntimeError("target is excluded or sensitive")
-    target = (CONFIG / p).resolve()
-    root = CONFIG.resolve()
-    if root not in target.parents:
-        raise RuntimeError("target escapes /config")
-    return target, p
-
-
-def write_file(body, c):
-    path = body.get("path")
-    if not path:
-        filename = body.get("filename")
-        directory = str(body.get("directory", "")).strip("/\\")
-        if not filename:
-            raise RuntimeError("path or filename is required")
-        path = f"{directory}/{filename}" if directory else filename
-    target, rel = safe_config_path(path, c)
-    if target.exists() and target.is_dir():
-        raise RuntimeError("target is a directory")
-    if "content_base64" in body:
-        data = base64.b64decode(str(body["content_base64"]), validate=True)
-    else:
-        content = body.get("content", "")
-        if not isinstance(content, str):
-            raise RuntimeError("content must be a string")
-        enc = str(body.get("encoding", "utf-8")).lower()
-        data = base64.b64decode(content, validate=True) if enc in {"base64", "b64"} else content.encode("utf-8")
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_bytes(data)
-    digest = hashlib.sha256(data).hexdigest()
-    log(f"write: /config/{rel.as_posix()} ({len(data)} bytes)")
-    return {"ok": True, "path": f"/config/{rel.as_posix()}", "bytes": len(data), "sha256": digest}
-
-
-def browse(path, c):
-    if path:
-        target, rel = safe_config_path(path, c)
-    else:
-        target, rel = CONFIG, Path(".")
-    if not target.is_dir():
-        raise RuntimeError("path is not a directory")
-    entries = []
-    for p in sorted(target.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower())):
-        r = p.relative_to(CONFIG)
-        if ignored(r, c):
-            continue
-        entries.append({"name": p.name, "path": r.as_posix(), "type": "directory" if p.is_dir() else "file", "size": p.stat().st_size if p.is_file() else None})
-    return {"path": "/config" if rel.as_posix() == "." else f"/config/{rel.as_posix()}", "entries": entries}
-
-
 class Handler(http.server.BaseHTTPRequestHandler):
-    def log_message(self, *_):
-        pass
-
-    def out(self, code, obj):
-        data = json.dumps(obj).encode()
+    def _json(self, code, data):
+        raw = json.dumps(data, ensure_ascii=False).encode("utf-8")
         self.send_response(code)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(raw)))
         self.end_headers()
-        self.wfile.write(data)
+        self.wfile.write(raw)
 
     def do_GET(self):
+        c = cfg()
         parsed = urlparse(self.path)
-        if parsed.path == "/status":
-            self.out(200, load(STATUS, {"version": VERSION}))
-        elif parsed.path == "/snapshots":
-            self.out(200, {"snapshots": sorted(p.name for p in SNAPSHOTS.iterdir() if p.is_dir()) if SNAPSHOTS.exists() else []})
-        elif parsed.path in {"/files", "/browse"}:
-            try:
-                q = parse_qs(parsed.query)
-                self.out(200, browse(q.get("path", [""])[0], cfg()))
-            except Exception as e:
-                self.out(400, {"error": str(e)})
-        elif parsed.path == "/":
-            self.out(200, {"service": "HA File Sync Bridge", "version": VERSION, "status": load(STATUS, {})})
-        else:
-            self.out(404, {"error": "not found"})
+        query = parse_qs(parsed.query)
+        try:
+            if parsed.path in {"/", "/status"}:
+                self._json(200, load(STATUS, {"version": VERSION, "state": "unknown"}))
+            elif parsed.path in {"/files", "/browse"}:
+                self._json(200, browse(query.get("path", ["."])[0], c))
+            elif parsed.path == "/state":
+                self._json(200, {"ok": True, **state()})
+            elif parsed.path == "/sync":
+                self._json(200, sync(c))
+            else:
+                self._json(404, {"ok": False, "error": "not found"})
+        except Exception as exc:
+            self._json(400, {"ok": False, "error": str(exc)})
 
     def do_POST(self):
+        c = cfg()
         try:
             length = int(self.headers.get("Content-Length", "0"))
-            body = json.loads(self.rfile.read(length) or b"{}") if length else {}
-            if self.path in {"/sync", "/sync/bidirectional", "/sync/ha_to_git", "/sync/git_to_ha"}:
-                forced = "ha_to_git" if self.path.endswith("ha_to_git") else ("git_to_ha" if self.path.endswith("git_to_ha") else None)
-                threading.Thread(target=lambda: sync(cfg(), forced), daemon=True).start()
-                self.out(202, {"accepted": True})
-            elif self.path == "/write":
-                self.out(201, write_file(body, cfg()))
-            elif self.path == "/restore":
-                restore(str(body.get("snapshot", "")), cfg(), bool(body.get("dry_run", False)))
-                self.out(200, {"ok": True})
+            body = json.loads(self.rfile.read(length).decode("utf-8")) if length else {}
+            if self.path == "/write":
+                self._json(200, write_file(body, c))
+            elif self.path == "/sync":
+                self._json(200, sync(c))
+            elif self.path == "/deploy":
+                self._json(200, sync(c, "git_to_ha"))
             else:
-                self.out(404, {"error": "not found"})
-        except Exception as e:
-            self.out(400, {"error": str(e)})
+                self._json(404, {"ok": False, "error": "not found"})
+        except Exception as exc:
+            self._json(400, {"ok": False, "error": str(exc)})
+
+    def log_message(self, fmt, *args):
+        log(fmt % args)
+
+
+def loop():
+    while True:
+        c = cfg()
+        sync(c)
+        time.sleep(max(5, int(c.get("poll_interval", 60))))
 
 
 def main():
     DATA.mkdir(parents=True, exist_ok=True)
-    set_status(state="idle", error=None)
+    CONFIG.mkdir(parents=True, exist_ok=True)
     log(f"HA File Sync Bridge {VERSION}")
     server = http.server.ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
-
-    def worker():
-        first = True
-        while True:
-            try:
-                c = cfg()
-                forced = str(c.get("initial_sync", "ha_to_git")) if first and not state().get("last_sync_commit") else None
-                sync(c, forced)
-            except Exception as e:
-                log(f"worker error: {e}")
-            first = False
-            time.sleep(max(10, int(cfg().get("poll_interval", 60))))
-
-    threading.Thread(target=worker, daemon=True).start()
+    threading.Thread(target=loop, daemon=True).start()
+    log(f"HTTP API listening on {PORT}")
     server.serve_forever()
 
 
