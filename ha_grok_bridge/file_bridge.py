@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "1.11"
+VERSION = "1.12"
 DATA = Path("/data")
 CONFIG = Path("/config")
 WORK = DATA / "bridge-work"
@@ -26,8 +26,12 @@ STATE = DATA / "state.json"
 STATUS = DATA / "status.json"
 LOCK = DATA / "sync.lock"
 PORT = 8099
+CONTROL_DIR = ".ai-control"
+CONTROL_COMMANDS = Path(CONTROL_DIR) / "commands"
+CONTROL_RESULTS = Path(CONTROL_DIR) / "results"
+MAX_CONTROL_COMMANDS = 10
 
-DEFAULT_EXCLUDED_NAMES = {".git", ".storage", ".cloud", ".HA_VERSION", ".ssh", ".cache", "secrets.yaml", "home-assistant_v2.db", "home-assistant_v2.db-shm", "home-assistant_v2.db-wal", "home-assistant_v2.db-journal", "home-assistant.log", "home-assistant.log.1", "home-assistant.log.fault"}
+DEFAULT_EXCLUDED_NAMES = {".git", ".storage", ".cloud", ".HA_VERSION", ".ssh", ".cache", ".ai-control", "secrets.yaml", "home-assistant_v2.db", "home-assistant_v2.db-shm", "home-assistant_v2.db-wal", "home-assistant_v2.db-journal", "home-assistant.log", "home-assistant.log.1", "home-assistant.log.fault"}
 DEFAULT_EXCLUDED_DIRS = {"tts", "media", "backups"}
 DEFAULT_EXCLUDED_SUFFIXES = {".passphrase", ".pem", ".key", ".p12", ".pfx"}
 SENSITIVE_NAMES = {"secrets.yaml", ".env", ".env.local", ".env.production", ".env.development", "credentials.json", "credentials.yaml", "token.json", "service-account.json", "ha-grok-bridge.passphrase", "ha-file-sync-bridge.passphrase"}
@@ -204,19 +208,25 @@ def secret_scan(root, c):
 
 
 def prepare_from_config(c):
+    control=WORK / CONTROL_DIR
+    preserve=DATA / "control-preserve"
+    if preserve.exists(): shutil.rmtree(preserve, ignore_errors=True)
+    if control.exists(): shutil.copytree(control,preserve)
     if WORK.exists():
-        for p in list(WORK.iterdir()):
-            if p.name != ".git":
-                shutil.rmtree(p) if p.is_dir() else p.unlink()
-    count = 0
+        for item in list(WORK.iterdir()):
+            if item.name not in {".git",CONTROL_DIR}:
+                shutil.rmtree(item) if item.is_dir() else item.unlink()
+    count=0
     for src in CONFIG.iterdir():
-        if excluded(src.name, c):
-            continue
-        dst = WORK / src.name
-        shutil.copytree(src, dst, ignore=ignore(c)) if src.is_dir() else shutil.copy2(src, dst)
-        count += 1
+        if excluded(src.name,c): continue
+        dst=WORK/src.name
+        shutil.copytree(src,dst,ignore=ignore(c)) if src.is_dir() else shutil.copy2(src,dst)
+        count+=1
+    if preserve.exists():
+        if control.exists(): shutil.rmtree(control)
+        shutil.copytree(preserve,control)
+        shutil.rmtree(preserve,ignore_errors=True)
     return count
-
 
 def stage_remote(c):
     if STAGE.exists():
@@ -383,6 +393,59 @@ def deploy_remote(c, commit):
     return previous
 
 
+def remote_config_changed(last,remote,c):
+    if not last or not remote or last==remote: return False
+    names=git(["diff","--name-only",last,remote],check=False).stdout.splitlines()
+    return any(not ignored(Path(n),c) for n in names)
+
+def _control_result(results_dir,command_id,result):
+    results_dir.mkdir(parents=True,exist_ok=True)
+    safe=re.sub(r"[^A-Za-z0-9._-]","_",str(command_id)) or "command"
+    save(results_dir/f"{safe}.json",{"id":str(command_id),"completed_at":now(),**result})
+
+def _control_read(path_value,c,encoding="utf-8"):
+    target=safe_config_path(path_value,c)
+    if not target.exists() or not target.is_file(): raise ValueError("file not found")
+    data=target.read_bytes()
+    if len(data)>MAX_READ_BYTES: raise ValueError(f"file too large to read via control queue (max {MAX_READ_BYTES} bytes)")
+    scan_dir=DATA/"control-read-scan"
+    shutil.rmtree(scan_dir,ignore_errors=True); scan_dir.mkdir(parents=True,exist_ok=True)
+    scan_file=scan_dir/(target.name or "read.txt"); scan_file.write_bytes(data)
+    findings=secret_scan(scan_dir,c); shutil.rmtree(scan_dir,ignore_errors=True)
+    digest=hashlib.sha256(data).hexdigest(); rel="/config/"+target.relative_to(CONFIG).as_posix()
+    if findings: return {"ok":False,"path":rel,"bytes":len(data),"sha256":digest,"error":"SECURITY BLOCKED: read result contains secret-like material"}
+    if encoding.lower()=="base64": return {"ok":True,"path":rel,"bytes":len(data),"sha256":digest,"encoding":"base64","content_base64":base64.b64encode(data).decode("ascii")}
+    try: return {"ok":True,"path":rel,"bytes":len(data),"sha256":digest,"encoding":"utf-8","content":data.decode("utf-8")}
+    except UnicodeDecodeError: return {"ok":True,"path":rel,"bytes":len(data),"sha256":digest,"encoding":"base64","content_base64":base64.b64encode(data).decode("ascii")}
+
+def process_ai_control(c,branch,dry):
+    commands_dir=WORK/CONTROL_COMMANDS; results_dir=WORK/CONTROL_RESULTS
+    if not commands_dir.is_dir(): return
+    for command_path in sorted(commands_dir.glob("*.json"))[:MAX_CONTROL_COMMANDS]:
+        command_id=command_path.stem
+        try:
+            command=json.loads(command_path.read_text(encoding="utf-8"))
+            if not isinstance(command,dict): raise ValueError("command must be a JSON object")
+            action=str(command.get("action","")).strip().lower()
+            if action not in {"read","write","browse","sync"}: raise ValueError("unsupported action")
+            if action=="read": result=_control_read(command.get("path",""),c,str(command.get("encoding","utf-8")))
+            elif action=="write": result=write_file(command,c)
+            elif action=="browse": result=browse(command.get("path","."),c)
+            else: result={"ok":True,"commit":remote_head(branch),"config_hash":treehash(CONFIG,c)}
+            command_path.unlink(missing_ok=True); _control_result(results_dir,command_id,{"action":action,**result})
+            if action=="write":
+                findings=secret_scan(WORK,c)
+                if findings: raise RuntimeError(f"SECRET SCAN BLOCKED: {len(findings)} finding(s): {', '.join(findings[:5])}")
+                snapshot(c); prepare_from_config(c)
+            push(branch,dry,c,message=f"AI control: {action} {command_id}")
+            log(f"AI control: completed {action} {command_id}")
+        except Exception as exc:
+            try:
+                command_path.unlink(missing_ok=True); _control_result(results_dir,command_id,{"ok":False,"error":str(exc)})
+                push(branch,dry,c,message=f"AI control: failed {command_id}")
+            except Exception as result_exc: log(f"AI control result failed: {result_exc}")
+            log(f"AI control ERROR {command_id}: {exc}")
+
 def sync(c, forced=None):
     acquire()
     try:
@@ -401,9 +464,10 @@ def sync(c, forced=None):
         local_changed = bool(last) and local_hash != s.get("last_config_hash")
         remote = remote_head(branch)
         remote_changed = bool(last) and remote != last
-        if last and local_changed and remote_changed:
+        remote_config_change = remote_config_changed(last,remote,c)
+        if last and local_changed and remote_config_change:
             raise RuntimeError("SYNC CONFLICT: both sides changed")
-        if mode == "git_to_ha" or (mode == "bidirectional" and remote_changed and not local_changed and bool(c.get("deploy_on_remote_change", True))):
+        if mode == "git_to_ha" or (mode == "bidirectional" and remote_config_change and not local_changed and bool(c.get("deploy_on_remote_change", True))):
             deploy_remote(c, remote)
             log(f"GitHub -> /config: deployed {remote[:8]}")
         elif mode in {"ha_to_git", "bidirectional"} and (local_changed or not last):
@@ -418,6 +482,8 @@ def sync(c, forced=None):
                 raise RuntimeError(f"SECRET SCAN BLOCKED: {len(findings)} finding(s): {', '.join(findings[:5])}")
             _, head = push(branch, dry, c)
             remote = head if not dry else remote
+        process_ai_control(c,branch,dry)
+        remote=remote_head(branch)
         final = remote if remote else git(["rev-parse", "HEAD"]).stdout.strip()
         save(STATE, {**state(), "last_sync_commit": final, "last_config_hash": treehash(CONFIG, c), "last_success": now(), "last_deployment_commit": final})
         set_status(state="idle", last_sync=final, deployment_commit=final, error=None)
