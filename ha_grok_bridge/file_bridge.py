@@ -3,9 +3,7 @@ from __future__ import annotations
 import hashlib,http.server,json,re,shutil,subprocess,threading,time
 from datetime import datetime,timezone
 from pathlib import Path
-from typing import Any
-VERSION="1.0.0"
-DATA=Path('/data'); CONFIG=Path('/config'); WORK=DATA/'bridge-work'; SNAPSHOTS=DATA/'snapshots'; OPTIONS=DATA/'options.json'; STATE=DATA/'state.json'; STATUS=DATA/'status.json'; LOCK=DATA/'sync.lock'; PORT=8099
+VERSION="1.0.0"; DATA=Path('/data'); CONFIG=Path('/config'); WORK=DATA/'bridge-work'; SNAPSHOTS=DATA/'snapshots'; OPTIONS=DATA/'options.json'; STATE=DATA/'state.json'; STATUS=DATA/'status.json'; LOCK=DATA/'sync.lock'; PORT=8099
 DEFAULT_EXCLUDED_NAMES={'.git','.storage','.cloud','.HA_VERSION','.ssh','.cache','secrets.yaml','home-assistant_v2.db','home-assistant_v2.db-shm','home-assistant_v2.db-wal','home-assistant_v2.db-journal','home-assistant.log','home-assistant.log.1','home-assistant.log.fault'}
 DEFAULT_EXCLUDED_DIRS={'tts','media','backups'}; DEFAULT_EXCLUDED_SUFFIXES={'.passphrase','.pem','.key','.p12','.pfx'}
 SECRET_PATTERNS=[re.compile(r'-----BEGIN (?:OPENSSH|RSA|EC|DSA|PRIVATE) KEY-----'),re.compile(r'(?i)\b(api[_-]?key|access[_-]?token|client[_-]?secret|private[_-]?key)\s*[:=]'),re.compile(r'(?i)\b(password|passwd|token|secret)\s*[:=]\s*[\'\"][^\'\"]+[\'\"]')]
@@ -131,7 +129,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
   raw=json.dumps(v,indent=2).encode(); self.send_response(code); self.send_header('Content-Type','application/json'); self.send_header('Content-Length',str(len(raw))); self.end_headers(); self.wfile.write(raw)
  def do_GET(self):
   if self.path=='/':
-   s=load_json(STATUS,{'version':VERSION}); snaps=sorted(p.name for p in SNAPSHOTS.iterdir() if p.is_dir()) if SNAPSHOTS.exists() else []; body=f'''<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>HA File Sync Bridge</title></head><body><h1>HA File Sync Bridge {VERSION}</h1><pre>{json.dumps(s,indent=2)}</pre><form method="post" action="/sync/up"><button>HA → GitHub</button></form><form method="post" action="/sync/down"><button>GitHub → HA</button></form><h2>Snapshots</h2><pre>{json.dumps(snaps,indent=2)}</pre></body></html>'''.encode(); self.send_response(200); self.send_header('Content-Type','text/html; charset=utf-8'); self.send_header('Content-Length',str(len(body))); self.end_headers(); self.wfile.write(body); return
+   s=load_json(STATUS,{'version':VERSION}); snaps=sorted(p.name for p in SNAPSHOTS.iterdir() if p.is_dir()) if SNAPSHOTS.exists() else []; body=f'<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>HA File Sync Bridge</title></head><body><h1>HA File Sync Bridge {VERSION}</h1><pre>{json.dumps(s,indent=2)}</pre><form method="post" action="/sync/up"><button>HA → GitHub</button></form><form method="post" action="/sync/down"><button>GitHub → HA</button></form><h2>Snapshots</h2><pre>{json.dumps(snaps,indent=2)}</pre></body></html>'.encode(); self.send_response(200); self.send_header('Content-Type','text/html; charset=utf-8'); self.send_header('Content-Length',str(len(body))); self.end_headers(); self.wfile.write(body); return
   if self.path=='/status': self.send_json(200,load_json(STATUS,{'version':VERSION})); return
   if self.path=='/snapshots': self.send_json(200,{'snapshots':[p.name for p in sorted(SNAPSHOTS.iterdir()) if p.is_dir()] if SNAPSHOTS.exists() else []}); return
   self.send_json(404,{'error':'not found'})
