@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Add-on-Poller 0.2.4. Nur Git command.json, lokal /config. Keine HTTP-API."""
+"""Add-on-Poller 0.3.0. Nur Git command.json, lokal /config. Keine HTTP-API."""
 import json
 import os
+import shutil
 import subprocess
 import time
 from datetime import datetime, timezone
@@ -13,7 +14,7 @@ RESULT_LOCAL = HOME / "result.json"
 CLONE = HOME / "bridge-push"
 OPTIONS = Path("/data/options.json")
 DEFAULT_REPO = "git@github.com:nicofroeba16-cell/ha-grok-bridge.git"
-VERSION = "0.2.4"
+VERSION = "0.3.0"
 
 ALLOWED_PREFIXES = (
     "ha info",
@@ -62,6 +63,8 @@ def allowed(cmd):
 
 
 def _shell(cmd, cwd=None):
+    env = os.environ.copy()
+    env.pop("GIT_SSH_COMMAND", None)
     proc = subprocess.run(
         cmd,
         shell=True,
@@ -69,6 +72,7 @@ def _shell(cmd, cwd=None):
         capture_output=True,
         timeout=180,
         cwd=cwd or str(HOME),
+        env=env,
     )
     out = (proc.stdout or "") + (("\n" + proc.stderr) if proc.stderr else "")
     return proc.returncode, out.strip()
@@ -80,6 +84,16 @@ def git_env():
     env.setdefault("GIT_AUTHOR_EMAIL", "bridge@local")
     env.setdefault("GIT_COMMITTER_NAME", "ha-grok-bridge")
     env.setdefault("GIT_COMMITTER_EMAIL", "bridge@local")
+    key = None
+    for cand in ("/ssl/ha-grok-bridge", "/data/ssh/id_ed25519", "/data/ssh/id_rsa"):
+        if Path(cand).is_file():
+            key = cand
+            break
+    if key:
+        env["GIT_SSH_COMMAND"] = (
+            "ssh -i %s -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new "
+            "-o BatchMode=yes -o UserKnownHostsFile=/data/.ssh/known_hosts" % key
+        )
     return env
 
 
@@ -99,11 +113,25 @@ def git_run(args, timeout=60, check=False):
     return proc.returncode, err
 
 
+def normalize_repo(repo):
+    r = (repo or DEFAULT_REPO).strip()
+    if r.startswith("https://github.com/"):
+        r = "git@github.com:" + r[len("https://github.com/") :]
+        if not r.endswith(".git"):
+            r = r.rstrip("/") + ".git"
+    return r or DEFAULT_REPO
+
+
 def git_clone_or_fetch(repo):
+    repo = normalize_repo(repo)
+    if CLONE.exists() and not (CLONE / ".git").exists():
+        shutil.rmtree(CLONE)
     if not CLONE.exists():
         git_run(["git", "clone", "--depth", "1", repo, str(CLONE)], check=True)
-        return
-    git_run(["git", "-C", str(CLONE), "fetch", "origin", "main"])
+    else:
+        git_run(["git", "-C", str(CLONE), "remote", "set-url", "origin", repo])
+        git_run(["git", "-C", str(CLONE), "fetch", "origin", "main"])
+    git_run(["git", "-C", str(CLONE), "remote", "set-url", "origin", repo])
     git_run(["git", "-C", str(CLONE), "checkout", "origin/main", "--", "command.json"])
 
 
@@ -159,7 +187,7 @@ def main():
     HOME.mkdir(parents=True, exist_ok=True)
     opts = load_options()
     interval = int(opts.get("poll_interval") or 15)
-    repo = str(opts.get("git_repo") or DEFAULT_REPO)
+    repo = normalize_repo(str(opts.get("git_repo") or DEFAULT_REPO))
     last = LAST_ID.read_text().strip() if LAST_ID.exists() else ""
     log("Add-on-Poller %s · nur Git · kein HTTP · repo=%s · interval=%ss" % (VERSION, repo, interval))
     log("Kein SSH zum Host. /config lokal.")
