@@ -1,4 +1,1 @@
-{
-  "id": "ha-20260901-060900-inf5",
-  "command": "ha core info"
-}
+{"id":"ha-20260901-test-001","command":"ha core info"}
