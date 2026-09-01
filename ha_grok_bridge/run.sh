@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 log(){ echo "[file-bridge] $*"; }
-VERSION="0.5.5"
+VERSION="0.5.6"
 KEY_SOURCE="/ssl/ha-grok-bridge"
 KEY_DEST="/data/ssh/id_ed25519"
 APP_DIR="/opt/ha-file-sync-bridge"
@@ -26,9 +26,9 @@ EOF
   export SSH_ASKPASS="$ASKPASS"
   export SSH_ASKPASS_REQUIRE=force
   export DISPLAY=:0
-  export GIT_SSH_COMMAND="ssh -i $KEY_DEST -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/data/.ssh/known_hosts"
   eval "$(ssh-agent -s)" >/dev/null
   if ssh-add "$KEY_DEST" </dev/null >/tmp/ssh-add.out 2>/tmp/ssh-add.err; then
+    export GIT_SSH_COMMAND="ssh -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/data/.ssh/known_hosts"
     log "SSH-Agent gestartet; passphrase-geschützter Key erfolgreich geladen"
   else
     log "FATAL SSH-Key konnte nicht in ssh-agent geladen werden"
