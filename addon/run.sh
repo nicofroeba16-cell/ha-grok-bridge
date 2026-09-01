@@ -1,10 +1,10 @@
 #!/bin/bash
-# 0.5.0 – structured Git file synchronization
+# 0.5.1 – structured Git file synchronization
 set -euo pipefail
 
 log() { echo "[file-bridge] $*"; }
 
-VERSION="0.5.0"
+VERSION="0.5.1"
 KEY_SOURCE="/ssl/ha-grok-bridge"
 KEY_DEST="/data/ssh/id_ed25519"
 
@@ -27,4 +27,4 @@ export GIT_SSH_COMMAND="ssh -i $KEY_DEST -o IdentitiesOnly=yes -o StrictHostKeyC
 
 log "SSH-Key verfügbar: $KEY_SOURCE"
 log "Starte file_bridge.py ..."
-exec python3 /opt/ha-grok-bridge/file_bridge.py
+exec python3 /opt/ha-file-sync-bridge/file_bridge.py
