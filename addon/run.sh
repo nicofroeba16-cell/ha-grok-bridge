@@ -5,7 +5,7 @@ set -euo pipefail
 log() { echo "[file-bridge] $*"; }
 
 VERSION="0.5.0"
-KEY_SOURCE="/ssl/ha-grok-bridge-live-2026"
+KEY_SOURCE="/ssl/ha-grok-bridge"
 KEY_DEST="/data/ssh/id_ed25519"
 
 log "HA File Sync Bridge Add-on $VERSION"
