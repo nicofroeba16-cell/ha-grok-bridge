@@ -20,22 +20,11 @@ cp -f "$KEY_SOURCE" "$KEY_DEST"
 chmod 600 "$KEY_DEST"
 chmod 700 /data/ssh /data/.ssh
 
-# Same GitHub host-key setup as the working 0.3.x release.
 ssh-keyscan -t rsa,ecdsa,ed25519 github.com > /data/.ssh/known_hosts 2>/dev/null || true
 chmod 600 /data/.ssh/known_hosts
 
 export GIT_SSH_COMMAND="ssh -i $KEY_DEST -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/data/.ssh/known_hosts -o BatchMode=yes"
 
-if [[ ! -d /config && -d /homeassistant ]]; then
-  ln -sfn /homeassistant /config
-fi
-
-if [[ ! -d /config ]]; then
-  log "FATAL /config nicht gemappt"
-  exit 1
-fi
-
-log "/config ok"
-log "Git-SSH-Key: $KEY_DEST (von $KEY_SOURCE)"
+log "SSH-Key verfügbar: $KEY_SOURCE"
 log "Starte file_bridge.py ..."
-exec python3 /opt/ha-file-sync-bridge/file_bridge.py
+exec python3 /opt/ha-grok-bridge/file_bridge.py
