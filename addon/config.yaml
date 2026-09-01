@@ -10,6 +10,9 @@ arch:
 startup: application
 boot: auto
 init: false
+map:
+  - type: ssl
+    read_only: true
 options:
   poll_interval: 60
   config_repo: git@github.com:nicofroeba16-cell/ha-grok-bridge-live.git
