@@ -4,7 +4,7 @@ import hashlib, http.server, json, re, shutil, subprocess, threading, time
 from datetime import datetime, timezone
 from pathlib import Path
 
-VERSION = "1.0.1"
+VERSION = "1.0.2"
 DATA = Path("/data")
 CONFIG = Path("/config")
 WORK = DATA / "bridge-work"
@@ -24,8 +24,6 @@ DEFAULT_EXCLUDED_NAMES = {
 DEFAULT_EXCLUDED_DIRS = {"tts", "media", "backups"}
 DEFAULT_EXCLUDED_SUFFIXES = {".passphrase", ".pem", ".key", ".p12", ".pfx"}
 
-# Deliberately conservative: source-code files are not scanned with generic
-# words such as token/password because that creates false positives in HA JS/Python.
 SECRET_PATTERNS = [
     re.compile(r"-----BEGIN (?:OPENSSH|RSA|EC|DSA|PRIVATE) KEY-----"),
     re.compile(r"(?i)^\s*(?:api[_-]?key|access[_-]?token|client[_-]?secret|private[_-]?key)\s*[:=]\s*['\"]?[^'\"\s]+"),
@@ -212,13 +210,24 @@ def commit_push(branch: str, dry_run: bool) -> bool:
     if not changes:
         log("no changes")
         return False
+    log(f"staged changes detected: {len(changes.splitlines())}")
+    staged = run_git(["diff", "--cached", "--name-status"], check=True).stdout.strip()
+    if staged:
+        log(f"staged files: {staged}")
     if dry_run:
         log("DRY-RUN: commit/push skipped")
         return True
     run_git(["config", "user.name", "HA File Sync Bridge"])
     run_git(["config", "user.email", "ha-file-sync-bridge@localhost"])
     run_git(["commit", "-m", f"Sync Home Assistant /config - {utc_now()}"])
+    local_head = run_git(["rev-parse", "HEAD"], check=True).stdout.strip()
+    log(f"local commit created: {local_head}")
     run_git(["push", "origin", branch])
+    run_git(["fetch", "--prune", "origin"], check=True)
+    remote_head = run_git(["rev-parse", f"origin/{branch}"], check=True).stdout.strip()
+    if remote_head != local_head:
+        raise RuntimeError(f"PUSH VERIFICATION FAILED: local {local_head} != origin/{branch} {remote_head}")
+    log(f"push verified: origin/{branch} = {remote_head}")
     return True
 
 
