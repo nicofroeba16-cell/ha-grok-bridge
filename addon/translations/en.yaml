@@ -1,0 +1,7 @@
+configuration:
+  poll_interval:
+    name: Poll interval
+    description: Seconds between command.json checks
+  git_repo:
+    name: Git remote
+    description: SSH URL of the bridge repo (command.json / result.json)
