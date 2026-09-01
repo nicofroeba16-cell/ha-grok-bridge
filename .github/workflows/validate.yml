@@ -1,0 +1,21 @@
+name: Validate HA File Sync Bridge
+
+on:
+  push:
+    branches: [main, release-1.0.0]
+  pull_request:
+    branches: [main, release-1.0.0]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Python syntax
+        run: python3 -m py_compile ha_grok_bridge/file_bridge.py
+      - name: Shell syntax
+        run: bash -n ha_grok_bridge/run.sh
+      - name: Git whitespace check
+        run: git diff --check
+      - name: Add-on structure
+        run: test -f repository.yaml && test -f ha_grok_bridge/config.yaml && test -f ha_grok_bridge/Dockerfile && test -f ha_grok_bridge/run.sh && test -f ha_grok_bridge/file_bridge.py && test -f ha_grok_bridge/known_hosts
