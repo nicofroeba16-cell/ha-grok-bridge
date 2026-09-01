@@ -1,6 +1,6 @@
-name: HA Grok Bridge
+name: HA File Sync Bridge
 version: "0.5.1"
-description: HA Grok Bridge file synchronization service
+description: General Home Assistant file synchronization and Git deployment bridge
 slug: ha_grok_bridge
 url: https://github.com/nicofroeba16-cell/ha-grok-bridge
 arch:
