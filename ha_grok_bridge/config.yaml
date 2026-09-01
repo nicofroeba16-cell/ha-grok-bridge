@@ -1,6 +1,6 @@
 name: HA File Sync Bridge
 version: "1.0.0"
-description: General Home Assistant file synchronization and Git deployment bridge
+description: Synchronizes the active Home Assistant /config to the configured Git repository with snapshots and protected runtime files
 slug: ha_grok_bridge
 url: https://github.com/nicofroeba16-cell/ha-grok-bridge
 arch:
@@ -18,6 +18,10 @@ map:
 options:
   poll_interval: 60
   config_repo: git@github.com:nicofroeba16-cell/ha-grok-bridge-live.git
+  branch: main
+  sync_config_to_git: true
 schema:
   poll_interval: int
   config_repo: str
+  branch: str
+  sync_config_to_git: bool
