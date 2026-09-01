@@ -1,448 +1,164 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-import hashlib, http.server, json, re, shutil, subprocess, threading, time
-from datetime import datetime, timezone
+import hashlib,http.server,json,os,re,shutil,subprocess,threading,time
+from datetime import datetime,timezone
 from pathlib import Path
-
-VERSION = "1.0.2"
-DATA = Path("/data")
-CONFIG = Path("/config")
-WORK = DATA / "bridge-work"
-SNAPSHOTS = DATA / "snapshots"
-OPTIONS = DATA / "options.json"
-STATE = DATA / "state.json"
-STATUS = DATA / "status.json"
-LOCK = DATA / "sync.lock"
-PORT = 8099
-
-DEFAULT_EXCLUDED_NAMES = {
-    ".git", ".storage", ".cloud", ".HA_VERSION", ".ssh", ".cache",
-    "secrets.yaml", "home-assistant_v2.db", "home-assistant_v2.db-shm",
-    "home-assistant_v2.db-wal", "home-assistant_v2.db-journal",
-    "home-assistant.log", "home-assistant.log.1", "home-assistant.log.fault",
-}
-DEFAULT_EXCLUDED_DIRS = {"tts", "media", "backups"}
-DEFAULT_EXCLUDED_SUFFIXES = {".passphrase", ".pem", ".key", ".p12", ".pfx"}
-
-SECRET_PATTERNS = [
-    re.compile(r"-----BEGIN (?:OPENSSH|RSA|EC|DSA|PRIVATE) KEY-----"),
-    re.compile(r"(?i)^\s*(?:api[_-]?key|access[_-]?token|client[_-]?secret|private[_-]?key)\s*[:=]\s*['\"]?[^'\"\s]+"),
-    re.compile(r"(?i)^\s*(?:password|passwd|secret|token)\s*[:=]\s*['\"][^'\"]{8,}['\"]\s*$"),
-]
-SCANNABLE = {".yaml", ".yml", ".json", ".env", ".ini", ".conf", ".cfg", ".toml", ".txt", ".sh"}
-
-
-def utc_now() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-
-
-def log(message: str) -> None:
-    print(f"[file-bridge] {message}", flush=True)
-
-
-def atomic_json(path: Path, value: dict) -> None:
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(value, indent=2, sort_keys=True), encoding="utf-8")
-    tmp.replace(path)
-
-
-def load_json(path: Path, default: dict) -> dict:
-    try:
-        value = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else default
-        return value if isinstance(value, dict) else default
-    except Exception:
-        return default
-
-
-def options() -> dict:
-    defaults = {
-        "poll_interval": 60,
-        "config_repo": "git@github.com:nicofroeba16-cell/ha-grok-bridge-live.git",
-        "branch": "main",
-        "sync_mode": "bidirectional",
-        "initial_sync": "ha_to_git",
-        "dry_run": False,
-        "max_snapshots": 10,
-        "exclude_names": ",".join(sorted(DEFAULT_EXCLUDED_NAMES)),
-        "exclude_dirs": ",".join(sorted(DEFAULT_EXCLUDED_DIRS)),
-        "exclude_suffixes": ",".join(sorted(DEFAULT_EXCLUDED_SUFFIXES)),
-        "secret_scan": True,
-        "history_cleanup": False,
-    }
-    defaults.update(load_json(OPTIONS, {}))
-    return defaults
-
-
-def csv_set(value, fallback):
-    return {x.strip() for x in value.split(",") if x.strip()} if isinstance(value, str) else set(fallback)
-
-
-def excluded(name: str, cfg: dict) -> bool:
-    return (
-        name in csv_set(cfg.get("exclude_names"), DEFAULT_EXCLUDED_NAMES)
-        or name in csv_set(cfg.get("exclude_dirs"), DEFAULT_EXCLUDED_DIRS)
-        or any(name.endswith(s) for s in csv_set(cfg.get("exclude_suffixes"), DEFAULT_EXCLUDED_SUFFIXES))
-    )
-
-
-def ignored_tree(path: Path, cfg: dict) -> bool:
-    return any(excluded(part, cfg) for part in path.parts)
-
-
-def ignore_config(cfg: dict):
-    return lambda _directory, names: {n for n in names if excluded(n, cfg)}
-
-
-def run_git(args: list[str], cwd: Path = WORK, check: bool = True) -> subprocess.CompletedProcess[str]:
-    log(f"git command: git {' '.join(args)}")
-    proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, timeout=180)
-    if proc.stdout.strip():
-        log(f"git stdout: {proc.stdout.strip()}")
-    if proc.stderr.strip():
-        log(f"git stderr: {proc.stderr.strip()}")
-    if check and proc.returncode:
-        raise RuntimeError(f"git exited with {proc.returncode}: {proc.stderr.strip() or proc.stdout.strip()}")
-    return proc
-
-
-def ensure_repo(url: str, branch: str) -> None:
-    DATA.mkdir(parents=True, exist_ok=True)
-    if not (WORK / ".git").is_dir():
-        if WORK.exists():
-            shutil.rmtree(WORK)
-        run_git(["clone", "--no-checkout", url, str(WORK)], cwd=DATA)
-        run_git(["checkout", "-B", branch, f"origin/{branch}"])
-    else:
-        run_git(["remote", "set-url", "origin", url])
-        run_git(["fetch", "--prune", "origin"])
-        run_git(["checkout", branch])
-
-
-def validate_repo() -> None:
-    if run_git(["fsck", "--no-progress"], check=False).returncode:
-        raise RuntimeError("repository invalid")
-    log("repository valid")
-    log("repository access OK")
-
-
-def tree_hash(root: Path, cfg: dict) -> str:
-    digest = hashlib.sha256()
-    if not root.is_dir():
-        return digest.hexdigest()
-    for path in sorted(root.rglob("*")):
-        rel = path.relative_to(root)
-        if ignored_tree(rel, cfg):
-            continue
-        if path.is_file():
-            digest.update(rel.as_posix().encode())
-            digest.update(b"\0")
-            digest.update(path.read_bytes())
-    return digest.hexdigest()
-
-
-def snapshot(cfg: dict) -> Path:
-    if not CONFIG.is_dir():
-        raise RuntimeError("/config is not mapped")
-    SNAPSHOTS.mkdir(parents=True, exist_ok=True)
-    target = SNAPSHOTS / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    shutil.copytree(CONFIG, target, ignore=ignore_config(cfg))
-    limit = max(0, int(cfg.get("max_snapshots", 10)))
-    snapshots = sorted(p for p in SNAPSHOTS.iterdir() if p.is_dir())
-    if limit and len(snapshots) > limit:
-        for old in snapshots[:-limit]:
-            shutil.rmtree(old, ignore_errors=True)
-    return target
-
-
-def clear_allowed_worktree(cfg: dict) -> None:
-    for path in list(WORK.iterdir()):
-        if path.name == ".git" or excluded(path.name, cfg):
-            continue
-        if path.is_dir():
-            shutil.rmtree(path)
-        else:
-            path.unlink()
-
-
-def copy_config_to_work(cfg: dict) -> int:
-    if not CONFIG.is_dir():
-        raise RuntimeError("/config is not mapped")
-    clear_allowed_worktree(cfg)
-    count = 0
-    for source in CONFIG.iterdir():
-        if excluded(source.name, cfg):
-            continue
-        destination = WORK / source.name
-        if source.is_dir():
-            shutil.copytree(source, destination, ignore=ignore_config(cfg))
-        else:
-            shutil.copy2(source, destination)
-        count += 1
-    return count
-
-
-def tracked_sensitive_files(cfg: dict) -> list[str]:
-    result = run_git(["ls-files"], check=True).stdout.splitlines()
-    return [p for p in result if ignored_tree(Path(p), cfg)]
-
-
-def secret_scan(cfg: dict) -> list[str]:
-    if not bool(cfg.get("secret_scan", True)):
-        return []
-    findings = []
-    for path in WORK.rglob("*"):
-        if not path.is_file() or ".git" in path.parts or ignored_tree(path.relative_to(WORK), cfg):
-            continue
-        if path.suffix.lower() not in SCANNABLE:
-            continue
-        try:
-            text = path.read_text(encoding="utf-8", errors="ignore")
-        except Exception:
-            continue
-        if any(pattern.search(text) for pattern in SECRET_PATTERNS):
-            findings.append(path.relative_to(WORK).as_posix())
-    return findings
-
-
-def commit_push(branch: str, dry_run: bool) -> bool:
-    run_git(["add", "-A"])
-    changes = run_git(["status", "--short"], check=False).stdout.strip()
-    if not changes:
-        log("no changes")
-        return False
-    log(f"staged changes detected: {len(changes.splitlines())}")
-    staged = run_git(["diff", "--cached", "--name-status"], check=True).stdout.strip()
-    if staged:
-        log(f"staged files: {staged}")
-    if dry_run:
-        log("DRY-RUN: commit/push skipped")
-        return True
-    run_git(["config", "user.name", "HA File Sync Bridge"])
-    run_git(["config", "user.email", "ha-file-sync-bridge@localhost"])
-    run_git(["commit", "-m", f"Sync Home Assistant /config - {utc_now()}"])
-    local_head = run_git(["rev-parse", "HEAD"], check=True).stdout.strip()
-    log(f"local commit created: {local_head}")
-    run_git(["push", "origin", branch])
-    run_git(["fetch", "--prune", "origin"], check=True)
-    remote_head = run_git(["rev-parse", f"origin/{branch}"], check=True).stdout.strip()
-    if remote_head != local_head:
-        raise RuntimeError(f"PUSH VERIFICATION FAILED: local {local_head} != origin/{branch} {remote_head}")
-    log(f"push verified: origin/{branch} = {remote_head}")
-    return True
-
-
-def state() -> dict:
-    return load_json(STATE, {})
-
-
-def save_state(**values) -> None:
-    current = state()
-    current.update(values)
-    atomic_json(STATE, current)
-
-
-def copy_work_to_config(cfg: dict, dry_run: bool) -> int:
-    if not CONFIG.is_dir():
-        raise RuntimeError("/config is not mapped")
-    allowed_remote = [p for p in WORK.iterdir() if p.name != ".git" and not excluded(p.name, cfg)]
-    remote_names = {p.name for p in allowed_remote}
-    count = 0
-    for source in allowed_remote:
-        destination = CONFIG / source.name
-        if not dry_run:
-            if destination.exists():
-                shutil.rmtree(destination) if destination.is_dir() else destination.unlink()
-            if source.is_dir():
-                shutil.copytree(source, destination, ignore=ignore_config(cfg))
-            else:
-                shutil.copy2(source, destination)
-        count += 1
-    if not dry_run:
-        for destination in list(CONFIG.iterdir()):
-            if not excluded(destination.name, cfg) and destination.name not in remote_names:
-                shutil.rmtree(destination) if destination.is_dir() else destination.unlink()
-    return count
-
-
-def sync_cycle(cfg: dict, forced_mode: str | None = None) -> None:
-    if not CONFIG.is_dir():
-        raise RuntimeError("/config is not mapped")
-    branch = str(cfg.get("branch", "main"))
-    dry = bool(cfg.get("dry_run", False))
-    mode = forced_mode or str(cfg.get("sync_mode", "bidirectional"))
-    ensure_repo(str(cfg["config_repo"]), branch)
-    validate_repo()
-    current = state()
-    last_commit = current.get("last_sync_commit")
-    local_changed = tree_hash(CONFIG, cfg) != current.get("last_config_hash")
-    run_git(["fetch", "--prune", "origin"])
-    remote_head = run_git(["rev-parse", f"origin/{branch}"]).stdout.strip()
-    remote_changed = bool(last_commit and remote_head != last_commit)
-
-    if mode == "git_to_ha":
-        if last_commit and local_changed and remote_changed:
-            raise RuntimeError("SYNC CONFLICT: /config and GitHub changed")
-        run_git(["reset", "--hard", f"origin/{branch}"])
-        snapshot(cfg)
-        log(f"GitHub -> /config: {copy_work_to_config(cfg, dry)} items prepared")
-    elif mode == "ha_to_git":
-        sensitive = tracked_sensitive_files(cfg)
-        if sensitive:
-            raise RuntimeError("SECURITY BLOCKED: sensitive paths are already tracked: " + ", ".join(sensitive))
-        snapshot(cfg)
-        log(f"/config sync: {copy_config_to_work(cfg)} top-level items prepared")
-        findings = secret_scan(cfg)
-        if findings:
-            raise RuntimeError("SECRET SCAN BLOCKED: " + ", ".join(findings))
-        commit_push(branch, dry)
-    else:
-        if last_commit and local_changed and remote_changed:
-            raise RuntimeError("SYNC CONFLICT: both /config and GitHub changed")
-        if remote_changed and not local_changed:
-            run_git(["reset", "--hard", f"origin/{branch}"])
-            snapshot(cfg)
-            log(f"GitHub -> /config: {copy_work_to_config(cfg, dry)} items prepared")
-        elif local_changed or not last_commit:
-            sensitive = tracked_sensitive_files(cfg)
-            if sensitive:
-                raise RuntimeError("SECURITY BLOCKED: sensitive paths are already tracked: " + ", ".join(sensitive))
-            snapshot(cfg)
-            log(f"/config sync: {copy_config_to_work(cfg)} top-level items prepared")
-            findings = secret_scan(cfg)
-            if findings:
-                raise RuntimeError("SECRET SCAN BLOCKED: " + ", ".join(findings))
-            commit_push(branch, dry)
-
-    head = run_git(["rev-parse", "HEAD"]).stdout.strip()
-    save_state(last_sync_commit=head, last_config_hash=tree_hash(CONFIG, cfg), last_success=utc_now())
-
-
-def restore_snapshot(name: str, cfg: dict, dry_run: bool = False) -> None:
-    source = SNAPSHOTS / name
-    if not source.is_dir():
-        raise RuntimeError("snapshot not found")
-    if not dry_run:
-        snapshot(cfg)
-        for path in list(CONFIG.iterdir()):
-            if not excluded(path.name, cfg):
-                shutil.rmtree(path) if path.is_dir() else path.unlink()
-        for path in source.iterdir():
-            if excluded(path.name, cfg):
-                continue
-            destination = CONFIG / path.name
-            if path.is_dir():
-                shutil.copytree(path, destination, ignore=ignore_config(cfg))
-            else:
-                shutil.copy2(path, destination)
-    log(f"snapshot restore {'planned' if dry_run else 'completed'}: {name}")
-
-
-def history_cleanup(cfg: dict) -> None:
-    if not bool(cfg.get("history_cleanup", False)):
-        raise RuntimeError("history cleanup is disabled")
-    raise RuntimeError("history cleanup requires an explicit repository-specific purge plan; refusing unsafe automatic rewrite")
-
-
-class Handler(http.server.BaseHTTPRequestHandler):
-    def log_message(self, *_):
-        pass
-
-    def send_json(self, code: int, value: dict) -> None:
-        raw = json.dumps(value, indent=2).encode()
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(raw)))
-        self.end_headers()
-        self.wfile.write(raw)
-
-    def do_GET(self):
-        if self.path == "/status":
-            self.send_json(200, load_json(STATUS, {"version": VERSION}))
-            return
-        if self.path == "/snapshots":
-            names = sorted(p.name for p in SNAPSHOTS.iterdir() if p.is_dir()) if SNAPSHOTS.exists() else []
-            self.send_json(200, {"snapshots": names})
-            return
-        if self.path == "/":
-            status = load_json(STATUS, {"version": VERSION})
-            names = sorted(p.name for p in SNAPSHOTS.iterdir() if p.is_dir()) if SNAPSHOTS.exists() else []
-            body = ("<!doctype html><html><meta charset='utf-8'><meta name='viewport' content='width=device-width'>"
-                    f"<title>HA File Sync Bridge</title><body><h1>HA File Sync Bridge {VERSION}</h1>"
-                    f"<pre>{json.dumps(status, indent=2)}</pre>"
-                    "<form method='post' action='/sync/up'><button>HA → GitHub</button></form>"
-                    "<form method='post' action='/sync/down'><button>GitHub → HA</button></form>"
-                    f"<h2>Snapshots</h2><pre>{json.dumps(names, indent=2)}</pre></body></html>").encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-            return
-        self.send_json(404, {"error": "not found"})
-
-    def do_POST(self):
-        cfg = options()
-        try:
-            if self.path == "/sync/up":
-                sync_cycle(cfg, "ha_to_git")
-            elif self.path == "/sync/down":
-                sync_cycle(cfg, "git_to_ha")
-            elif self.path.startswith("/restore/"):
-                restore_snapshot(self.path.split("/", 2)[2], cfg, bool(cfg.get("dry_run")))
-            elif self.path == "/history-cleanup":
-                history_cleanup(cfg)
-            else:
-                self.send_json(404, {"error": "not found"})
-                return
-            self.send_json(200, {"ok": True})
-        except Exception as exc:
-            self.send_json(409, {"ok": False, "error": str(exc)})
-
-
-def serve() -> None:
-    http.server.ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
-
-
-def main() -> None:
-    log(f"HA File Sync Bridge {VERSION}")
-    threading.Thread(target=serve, daemon=True).start()
-    while True:
-        result = "ok"
-        error = ""
-        try:
-            cfg = options()
-            with LOCK.open("x"):
-                if not state().get("initialized"):
-                    sync_cycle(cfg, str(cfg.get("initial_sync", "ha_to_git")))
-                    save_state(initialized=True)
-                else:
-                    sync_cycle(cfg)
-        except FileExistsError:
-            result = "locked"
-            error = "another sync is running"
-        except Exception as exc:
-            result = "error"
-            error = str(exc)
-            log(f"REQUEST FAILED: {exc}")
-        finally:
-            try:
-                LOCK.unlink()
-            except FileNotFoundError:
-                pass
-            cfg = options()
-            atomic_json(STATUS, {
-                "version": VERSION,
-                "timestamp": utc_now(),
-                "result": result,
-                "error": error,
-                "repo": cfg.get("config_repo"),
-                "branch": cfg.get("branch"),
-                "config_hash": tree_hash(CONFIG, cfg) if CONFIG.is_dir() else None,
-                "last_sync_commit": state().get("last_sync_commit"),
-                "last_success": state().get("last_success"),
-            })
-        time.sleep(max(5, int(options().get("poll_interval", 60))))
-
-
-if __name__ == "__main__":
-    main()
+VERSION="1.0.3"; DATA=Path("/data"); CONFIG=Path("/config"); WORK=DATA/"bridge-work"; SNAPSHOTS=DATA/"snapshots"; OPTIONS=DATA/"options.json"; STATE=DATA/"state.json"; STATUS=DATA/"status.json"; LOCK=DATA/"sync.lock"; PORT=8099
+DEFAULT_EXCLUDED_NAMES={".git",".storage",".cloud",".HA_VERSION",".ssh",".cache","secrets.yaml","home-assistant_v2.db","home-assistant_v2.db-shm","home-assistant_v2.db-wal","home-assistant_v2.db-journal","home-assistant.log","home-assistant.log.1","home-assistant.log.fault"}
+DEFAULT_EXCLUDED_DIRS={"tts","media","backups"}; DEFAULT_EXCLUDED_SUFFIXES={".passphrase",".pem",".key",".p12",".pfx"}
+SENSITIVE_NAMES={"secrets.yaml",".env",".env.local",".env.production",".env.development","credentials.json","credentials.yaml","token.json","service-account.json","ha-grok-bridge.passphrase","ha-file-sync-bridge.passphrase"}; SENSITIVE_SUFFIXES=DEFAULT_EXCLUDED_SUFFIXES
+SECRET_PATTERNS=[re.compile(r"-----BEGIN (?:OPENSSH|RSA|EC|DSA|PRIVATE) KEY-----"),re.compile(r"\bghp_[A-Za-z0-9]{20,}\b"),re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b"),re.compile(r"\bAKIA[0-9A-Z]{16}\b"),re.compile(r"\bAIza[0-9A-Za-z_-]{30,}\b"),re.compile(r"\bxox[baprs]-[0-9A-Za-z-]{20,}\b"),re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b")]
+CONFIG_SECRET_RE=re.compile(r'''(?im)^\s*(?:api[_-]?key|access[_-]?token|client[_-]?secret|private[_-]?key|password|passwd|secret|token)\s*[:=]\s*["']([^"']{12,})["']\s*(?:#.*)?$''')
+SCANNABLE={".yaml",".yml",".json",".env",".ini",".conf",".cfg",".toml",".txt",".sh"}
+
+def now(): return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+def log(s): print(f"[file-bridge] {s}",flush=True)
+def load(p,d):
+ try:
+  v=json.loads(p.read_text(encoding="utf-8")) if p.is_file() else d
+  return v if isinstance(v,dict) else d
+ except Exception:return d
+def save(p,v):
+ p.parent.mkdir(parents=True,exist_ok=True); t=p.with_suffix(p.suffix+".tmp"); t.write_text(json.dumps(v,indent=2,sort_keys=True),encoding="utf-8"); t.replace(p)
+def cfg():
+ d={"poll_interval":60,"config_repo":"git@github.com:nicofroeba16-cell/ha-grok-bridge-live.git","branch":"main","sync_mode":"bidirectional","initial_sync":"ha_to_git","dry_run":False,"max_snapshots":10,"exclude_names":",".join(sorted(DEFAULT_EXCLUDED_NAMES)),"exclude_dirs":",".join(sorted(DEFAULT_EXCLUDED_DIRS)),"exclude_suffixes":",".join(sorted(DEFAULT_EXCLUDED_SUFFIXES)),"secret_scan":True,"history_cleanup":False}; d.update(load(OPTIONS,{})); return d
+def csv(v,f): return {x.strip() for x in v.split(",") if x.strip()} if isinstance(v,str) else set(f)
+def excluded(n,c): return n in csv(c.get("exclude_names"),DEFAULT_EXCLUDED_NAMES) or n in csv(c.get("exclude_dirs"),DEFAULT_EXCLUDED_DIRS) or any(n.endswith(x) for x in csv(c.get("exclude_suffixes"),DEFAULT_EXCLUDED_SUFFIXES))
+def ignored(p,c): return any(excluded(x,c) for x in p.parts)
+def ignore(c): return lambda _d,n:{x for x in n if excluded(x,c)}
+def git(a,cwd=WORK,check=True):
+ p=subprocess.run(["git",*a],cwd=cwd,capture_output=True,text=True,timeout=180)
+ if check and p.returncode: raise RuntimeError(f"git failed ({p.returncode}): {(p.stderr or p.stdout).strip().splitlines()[-1] if (p.stderr or p.stdout).strip() else 'unknown'}")
+ return p
+def repo(url,b):
+ DATA.mkdir(parents=True,exist_ok=True)
+ if not (WORK/".git").is_dir():
+  if WORK.exists(): shutil.rmtree(WORK)
+  git(["clone","--no-checkout",url,str(WORK)],DATA); git(["checkout","-B",b,f"origin/{b}"])
+ else: git(["remote","set-url","origin",url]); git(["fetch","--prune","origin"]); git(["checkout",b])
+def treehash(root,c):
+ h=hashlib.sha256()
+ if root.is_dir():
+  for p in sorted(root.rglob("*")):
+   r=p.relative_to(root)
+   if p.is_file() and not ignored(r,c): h.update(r.as_posix().encode()+b"\0"+p.read_bytes())
+ return h.hexdigest()
+def snapshot(c):
+ SNAPSHOTS.mkdir(parents=True,exist_ok=True); t=SNAPSHOTS/datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ"); shutil.copytree(CONFIG,t,ignore=ignore(c)); lim=max(0,int(c.get("max_snapshots",10))); xs=sorted(p for p in SNAPSHOTS.iterdir() if p.is_dir());
+ if lim and len(xs)>lim:
+  for p in xs[:-lim]: shutil.rmtree(p,ignore_errors=True)
+ return t
+def clear(c):
+ for p in list(WORK.iterdir()):
+  if p.name==".git" or excluded(p.name,c): continue
+  shutil.rmtree(p) if p.is_dir() else p.unlink()
+def to_work(c):
+ clear(c); n=0
+ for s in CONFIG.iterdir():
+  if excluded(s.name,c): continue
+  d=WORK/s.name; shutil.copytree(s,d,ignore=ignore(c)) if s.is_dir() else shutil.copy2(s,d); n+=1
+ return n
+def tracked_sensitive():
+ out=[]
+ for x in git(["ls-files"]).stdout.splitlines():
+  p=Path(x)
+  if any(q in SENSITIVE_NAMES or q.endswith(tuple(SENSITIVE_SUFFIXES)) for q in p.parts): out.append(x)
+ return out
+def secret_scan(c):
+ if not bool(c.get("secret_scan",True)): return []
+ out=[]
+ for p in WORK.rglob("*"):
+  if not p.is_file() or ".git" in p.parts: continue
+  r=p.relative_to(WORK)
+  if ignored(r,c): continue
+  if p.name in SENSITIVE_NAMES or any(q.endswith(tuple(SENSITIVE_SUFFIXES)) for q in r.parts): out.append(r.as_posix()); continue
+  if p.suffix.lower() not in SCANNABLE: continue
+  try:t=p.read_text(encoding="utf-8",errors="ignore")
+  except Exception:continue
+  if any(x.search(t) for x in SECRET_PATTERNS): out.append(r.as_posix()); continue
+  if p.suffix.lower() in {".yaml",".yml",".json",".env",".ini",".conf",".cfg",".toml"}:
+   for m in CONFIG_SECRET_RE.finditer(t):
+    if m.group(1).strip().lower() not in {"changeme","change-me","your-token","your_password","placeholder","example","null","none"}: out.append(r.as_posix()); break
+ return sorted(set(out))
+def push(b,dry):
+ git(["add","-A"]); n=git(["diff","--cached","--name-status"]).stdout.splitlines(); log(f"changes: {len(n)}")
+ if not n:return False
+ if dry: log("dry-run: commit/push skipped"); return True
+ git(["config","user.name","HA File Sync Bridge"]); git(["config","user.email","ha-file-sync-bridge@localhost"]); git(["commit","-m",f"Sync Home Assistant /config - {now()}"]); h=git(["rev-parse","HEAD"]).stdout.strip(); log(f"commit: {h[:8]}"); git(["push","origin",b]); git(["fetch","--prune","origin"])
+ if git(["rev-parse",f"origin/{b}"]).stdout.strip()!=h: raise RuntimeError("push verification failed")
+ log("push: OK"); return True
+def state(): return load(STATE,{})
+def status(**v):
+ x=load(STATUS,{"version":VERSION}); x.update(v); x.update(version=VERSION,updated_at=now()); save(STATUS,x)
+def acquire():
+ DATA.mkdir(parents=True,exist_ok=True)
+ try:
+  fd=os.open(LOCK,os.O_CREAT|os.O_EXCL|os.O_WRONLY,0o600); os.write(fd,f"pid={os.getpid()}\n".encode()); os.close(fd)
+ except FileExistsError: raise RuntimeError("sync already running")
+def release():
+ try:LOCK.unlink()
+ except FileNotFoundError:pass
+def sync(c,forced=None):
+ acquire()
+ try:
+  status(state="running",error=None); b=str(c.get("branch","main")); dry=bool(c.get("dry_run",False)); mode=forced or str(c.get("sync_mode","bidirectional")); log("sync start"); repo(str(c["config_repo"]),b)
+  if git(["fsck","--no-progress"],check=False).returncode: raise RuntimeError("repository invalid")
+  log("repo: OK"); s=state(); last=s.get("last_sync_commit"); lc=treehash(CONFIG,c)!=s.get("last_config_hash"); git(["fetch","--prune","origin"]); rh=git(["rev-parse",f"origin/{b}"]).stdout.strip(); rc=bool(last and rh!=last)
+  if last and lc and rc: raise RuntimeError("SYNC CONFLICT: both sides changed")
+  if mode=="git_to_ha" or (mode=="bidirectional" and rc and not lc):
+   git(["reset","--hard",f"origin/{b}"]); snapshot(c); log(f"GitHub -> /config: remote prepared")
+   for p in list(WORK.iterdir()):
+    if p.name==".git": continue
+   # WORK is already checked out at origin after reset; copy manually
+   names={p.name for p in WORK.iterdir() if p.name!=".git" and not excluded(p.name,c)}
+   for p in list(CONFIG.iterdir()):
+    if not excluded(p.name,c) and p.name not in names: shutil.rmtree(p) if p.is_dir() else p.unlink()
+   for p in WORK.iterdir():
+    if p.name==".git" or excluded(p.name,c): continue
+    d=CONFIG/p.name; shutil.rmtree(d) if d.exists() and d.is_dir() else (d.unlink() if d.exists() else None); shutil.copytree(p,d,ignore=ignore(c)) if p.is_dir() else shutil.copy2(p,d)
+  elif mode in {"ha_to_git","bidirectional"} and (lc or not last):
+   if tracked_sensitive(): raise RuntimeError("SECURITY BLOCKED: tracked sensitive path")
+   snapshot(c); log(f"/config prepared: {to_work(c)} items"); f=secret_scan(c)
+   if f: raise RuntimeError(f"SECRET SCAN BLOCKED: {len(f)} finding(s)")
+   push(b,dry)
+  h=git(["rev-parse","HEAD"]).stdout.strip(); save(STATE,{**state(),"last_sync_commit":h,"last_config_hash":treehash(CONFIG,c),"last_success":now()}); status(state="idle",last_sync=h,error=None); log("sync complete")
+ except Exception as e: status(state="error",error=str(e)); log(f"ERROR: {e}")
+ finally: release()
+def restore(name,c,dry=False):
+ s=SNAPSHOTS/name
+ if not s.is_dir(): raise RuntimeError("snapshot not found")
+ if not dry:
+  snapshot(c)
+  for p in list(CONFIG.iterdir()):
+   if not excluded(p.name,c): shutil.rmtree(p) if p.is_dir() else p.unlink()
+  for p in s.iterdir():
+   if excluded(p.name,c):continue
+   d=CONFIG/p.name; shutil.copytree(p,d,ignore=ignore(c)) if p.is_dir() else shutil.copy2(p,d)
+ log(f"snapshot restore {'planned' if dry else 'completed'}: {name}")
+class H(http.server.BaseHTTPRequestHandler):
+ def log_message(self,*a):pass
+ def out(self,n,x):
+  b=json.dumps(x).encode(); self.send_response(n); self.send_header("Content-Type","application/json"); self.send_header("Content-Length",str(len(b))); self.end_headers(); self.wfile.write(b)
+ def do_GET(self):
+  if self.path=="/status":self.out(200,load(STATUS,{"version":VERSION}));return
+  if self.path=="/snapshots":self.out(200,{"snapshots":sorted(p.name for p in SNAPSHOTS.iterdir() if p.is_dir()) if SNAPSHOTS.exists() else []});return
+  self.out(200,{"service":"HA File Sync Bridge","version":VERSION,"status":load(STATUS,{})}) if self.path=="/" else self.out(404,{"error":"not found"})
+ def do_POST(self):
+  try:
+   l=int(self.headers.get("Content-Length","0")); body=json.loads(self.rfile.read(l) or b"{}") if l else {}
+   if self.path in {"/sync","/sync/bidirectional","/sync/ha_to_git","/sync/git_to_ha"}:
+    m="ha_to_git" if self.path.endswith("ha_to_git") else ("git_to_ha" if self.path.endswith("git_to_ha") else None); threading.Thread(target=lambda:sync(cfg(),m),daemon=True).start(); self.out(202,{"accepted":True});return
+   if self.path=="/restore": restore(str(body.get("snapshot","")),cfg(),bool(body.get("dry_run",False))); self.out(200,{"ok":True});return
+   self.out(404,{"error":"not found"})
+  except Exception as e:self.out(400,{"error":str(e)})
+def main():
+ DATA.mkdir(parents=True,exist_ok=True); status(state="idle",error=None); log(f"HA File Sync Bridge {VERSION}"); http=http.server.ThreadingHTTPServer(("0.0.0.0",PORT),H)
+ def worker():
+  first=True
+  while True:
+   try:
+    c=cfg(); m=str(c.get("initial_sync","ha_to_git")) if first and not state().get("last_sync_commit") else None; sync(c,m)
+   except Exception:pass
+   first=False; time.sleep(max(10,int(cfg().get("poll_interval",60))))
+ threading.Thread(target=worker,daemon=True).start(); http.serve_forever()
+if __name__=="__main__":main()
