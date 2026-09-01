@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+VERSION = "1.0.0"
 DATA = Path('/data')
 CONFIG = Path('/config')
 WORK = DATA / 'bridge-work'
@@ -24,10 +25,7 @@ def run_git(args: list[str], cwd: Path = WORK, check: bool = True) -> subprocess
     return p
 
 def load_options() -> dict[str, Any]:
-    defaults = {
-        'poll_interval': 60,
-        'config_repo': 'git@github.com:nicofroeba16-cell/ha-grok-bridge-live.git',
-    }
+    defaults = {'poll_interval': 60, 'config_repo': 'git@github.com:nicofroeba16-cell/ha-grok-bridge-live.git'}
     if OPTIONS.is_file():
         try:
             value = json.loads(OPTIONS.read_text())
@@ -45,6 +43,11 @@ def ensure_repo(repo_url: str) -> None:
         run_git(['remote', 'set-url', 'origin', repo_url])
         run_git(['fetch', '--prune', 'origin'])
 
+def validate() -> tuple[bool, str]:
+    if not (WORK / '.git').is_dir(): return False, 'repository not initialized'
+    p = run_git(['fsck', '--no-progress'], check=False)
+    return (p.returncode == 0, 'repository valid' if p.returncode == 0 else 'repository invalid')
+
 def snapshot() -> Path:
     SNAPSHOTS.mkdir(parents=True, exist_ok=True)
     target = SNAPSHOTS / datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
@@ -52,15 +55,11 @@ def snapshot() -> Path:
     else: target.mkdir()
     return target
 
-def validate() -> tuple[bool, str]:
-    if not (WORK / '.git').is_dir(): return False, 'repository not initialized'
-    p = run_git(['fsck', '--no-progress'], check=False)
-    return (p.returncode == 0, p.stderr.strip() or 'repository valid')
-
 def deploy(source: Path | None = None) -> None:
     source = source or WORK
     if not source.is_dir(): raise FileNotFoundError(source)
-    snapshot(); CONFIG.mkdir(parents=True, exist_ok=True)
+    snapshot()
+    CONFIG.mkdir(parents=True, exist_ok=True)
     for item in source.iterdir():
         if item.name == '.git': continue
         destination = CONFIG / item.name
@@ -69,26 +68,15 @@ def deploy(source: Path | None = None) -> None:
             shutil.copytree(item, destination)
         else: shutil.copy2(item, destination)
 
-def rollback(snapshot_path: Path) -> None:
-    if not snapshot_path.is_dir(): raise FileNotFoundError(snapshot_path)
-    for item in CONFIG.iterdir():
-        if item.name == '.storage': continue
-        if item.is_dir(): shutil.rmtree(item)
-        else: item.unlink()
-    for item in snapshot_path.iterdir():
-        destination = CONFIG / item.name
-        if item.is_dir(): shutil.copytree(item, destination)
-        else: shutil.copy2(item, destination)
-
 def status() -> dict[str, Any]:
-    result: dict[str, Any] = {'time': datetime.now(timezone.utc).isoformat(), 'repository': str(WORK), 'config': str(CONFIG)}
+    result = {'version': VERSION, 'time': datetime.now(timezone.utc).isoformat(), 'repository': str(WORK), 'config': str(CONFIG)}
     if (WORK / '.git').is_dir(): result['git_status'] = run_git(['status', '--short'], check=False).stdout.splitlines()
     else: result['git_status'] = None
     result['snapshots'] = len(list(SNAPSHOTS.iterdir())) if SNAPSHOTS.is_dir() else 0
     return result
 
 def main() -> None:
-    log('HA File Sync Bridge 0.5.3')
+    log(f'HA File Sync Bridge {VERSION}')
     while True:
         try:
             cfg = load_options()
