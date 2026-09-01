@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "1.0.8"
+VERSION = "1.0.9"
 DATA = Path("/data")
 CONFIG = Path("/config")
 WORK = DATA / "bridge-work"
@@ -147,7 +147,17 @@ def tracked_sensitive(c):
         p = Path(item)
         if ignored(p, c):
             continue
-        if any(part in SENSITIVE_NAMES or part.endswith(tuple(DEFAULT_EXCLUDED_SUFFIXES)) for part in p.parts):
+        if any(part in SENSITIVE_NAMES or part.endswith(tuple(csv(c.get("exclude_suffixes"), DEFAULT_EXCLUDED_SUFFIXES))) for part in p.parts):
+            out.append(item)
+    return out
+
+
+def tracked_excluded(c):
+    """Return paths that are tracked in Git but forbidden for HA -> Git sync."""
+    out = []
+    for item in git(["ls-files"]).stdout.splitlines():
+        p = Path(item)
+        if ignored(p, c):
             out.append(item)
     return out
 
@@ -162,7 +172,7 @@ def secret_scan(root, c):
         rel = p.relative_to(root)
         if ignored(rel, c):
             continue
-        if p.name in SENSITIVE_NAMES or any(part.endswith(tuple(DEFAULT_EXCLUDED_SUFFIXES)) for part in rel.parts):
+        if p.name in SENSITIVE_NAMES or any(part.endswith(tuple(csv(c.get("exclude_suffixes"), DEFAULT_EXCLUDED_SUFFIXES))) for part in rel.parts):
             findings.append(rel.as_posix())
             continue
         if p.suffix.lower() not in SCANNABLE:
@@ -236,7 +246,10 @@ def deploy_stage(c, previous_snapshot=None):
             shutil.rmtree(STAGE, ignore_errors=True)
 
 
-def push(branch, dry):
+def push(branch, dry, c):
+    excluded_before = tracked_excluded(c)
+    if excluded_before:
+        log(f"excluded cleanup: {len(excluded_before)} tracked runtime path(s) will be removed")
     git(["add", "-A"])
     changes = git(["diff", "--cached", "--name-status"]).stdout.splitlines()
     log(f"changes: {len(changes)}")
@@ -327,7 +340,7 @@ def sync(c, forced=None):
             findings = secret_scan(WORK, c)
             if findings:
                 raise RuntimeError(f"SECRET SCAN BLOCKED: {len(findings)} finding(s): {', '.join(findings[:5])}")
-            _, head = push(branch, dry)
+            _, head = push(branch, dry, c)
             remote = head if not dry else remote
         final = remote if remote else git(["rev-parse", "HEAD"]).stdout.strip()
         save(STATE, {**state(), "last_sync_commit": final, "last_config_hash": treehash(CONFIG, c), "last_success": now(), "last_deployment_commit": final})
