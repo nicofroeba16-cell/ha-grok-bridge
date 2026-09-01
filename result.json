@@ -1,9 +1,9 @@
 {
-  "id": "ha-20260901-test-004",
+  "id": "ha-20260901-test-005",
   "command": "ha core info",
   "exit_code": 0,
   "ok": true,
   "output": "{\"result\":\"ok\",\"data\":{\"version\":\"2026.8.3\",\"version_latest\":\"2026.8.3\",\"update_available\":false,\"machine\":\"generic-x86-64\",\"ip_address\":\"172.30.32.1\",\"arch\":\"amd64\",\"image\":\"ghcr.io/home-assistant/generic-x86-64-homeassistant\",\"boot\":true,\"port\":80,\"ssl\":false,\"watchdog\":true,\"audio_input\":null,\"audio_output\":null,\"backups_exclude_database\":false,\"duplicate_log_file\":false}}",
-  "ts": "2026-09-01T10:46:09Z",
+  "ts": "2026-09-01T11:28:08Z",
   "via": "addon-0.3.3"
 }
