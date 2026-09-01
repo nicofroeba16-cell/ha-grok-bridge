@@ -1,12 +1,12 @@
 name: "HA Grok Bridge"
-version: "0.2.3"
+version: "0.2.4"
 slug: ha_grok_bridge
 description: "Pollt command.json und führt Whitelist-Befehle lokal auf /config aus. Ersatz für ki2. Keine HTTP-API."
 url: "https://github.com/nicofroeba16-cell/ha-grok-bridge"
 arch:
   - aarch64
   - amd64
-init: false
+init: true
 startup: services
 boot: manual
 watchdog: false
@@ -23,8 +23,10 @@ backup_exclude:
 map:
   - type: homeassistant_config
     read_only: false
+    path: /config
   - type: ssl
     read_only: true
+    path: /ssl
 options:
   poll_interval: 15
   git_repo: "git@github.com:nicofroeba16-cell/ha-grok-bridge.git"

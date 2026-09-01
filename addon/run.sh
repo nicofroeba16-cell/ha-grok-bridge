@@ -1,7 +1,7 @@
 #!/usr/bin/with-contenv bashio
 set -euo pipefail
 
-bashio::log.info "HA Grok Bridge Add-on 0.2.3 — nur Git, keine API"
+bashio::log.info "HA Grok Bridge Add-on 0.2.4 — nur Git, keine API"
 
 mkdir -p /data/ssh /data/.ssh
 chmod 700 /data/ssh /data/.ssh
@@ -26,10 +26,16 @@ fi
 ssh-keyscan -t rsa,ecdsa,ed25519 github.com >> /data/.ssh/known_hosts 2>/dev/null || true
 chmod 600 /data/.ssh/known_hosts || true
 
+if [[ ! -d /config && -d /homeassistant ]]; then
+  ln -sfn /homeassistant /config
+  bashio::log.warning "/config fehlte, Link -> /homeassistant"
+fi
 if [[ ! -d /config ]]; then
-  bashio::log.fatal "/config nicht gemappt — Add-on stoppt."
+  bashio::log.fatal "/config nicht gemappt — Add-on stoppt. config.yaml: path: /config setzen."
+  ls -la / || true
   exit 1
 fi
+bashio::log.info "/config ok ($(ls -1 /config | wc -l) Eintraege)"
 
 export HOME=/data
 export BRIDGE_HOME=/data
