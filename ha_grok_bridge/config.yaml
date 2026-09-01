@@ -6,7 +6,6 @@ url: https://github.com/nicofroeba16-cell/ha-grok-bridge
 arch:
   - amd64
   - aarch64
-  - armv7
 startup: application
 boot: auto
 init: false
@@ -15,6 +14,7 @@ map:
     read_only: true
   - type: homeassistant_config
     read_only: false
+    path: /config
 options:
   poll_interval: 60
   config_repo: git@github.com:nicofroeba16-cell/ha-grok-bridge-live.git

@@ -11,7 +11,7 @@ mkdir -p /data/ssh /data/.ssh
 cp -f "$KEY_SOURCE" "$KEY_DEST"
 chmod 600 "$KEY_DEST"
 chmod 700 /data/ssh /data/.ssh
-ssh-keyscan -t rsa,ecdsa,ed25519 github.com > /data/.ssh/known_hosts 2>/dev/null || true
+cp -f "$APP_DIR/known_hosts" /data/.ssh/known_hosts
 chmod 600 /data/.ssh/known_hosts
 export GIT_SSH_COMMAND="ssh -i $KEY_DEST -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/data/.ssh/known_hosts -o BatchMode=yes"
 log "SSH-Key verfügbar: $KEY_SOURCE"
