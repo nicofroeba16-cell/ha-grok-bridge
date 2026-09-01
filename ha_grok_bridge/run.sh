@@ -1,12 +1,13 @@
 #!/bin/bash
 set -euo pipefail
 log(){ echo "[file-bridge] $*"; }
-VERSION="0.5.8"
+VERSION="1.0.0"
 KEY_SOURCE="/ssl/ha-file-sync-bridge-2026"
 KEY_DEST="/data/ssh/id_ed25519"
 APP_DIR="/opt/ha-file-sync-bridge"
 log "HA File Sync Bridge Add-on $VERSION"
 [[ -f "$KEY_SOURCE" ]] || { log "FATAL SSH-Key fehlt: $KEY_SOURCE"; exit 1; }
+[[ -f "$APP_DIR/file_bridge.py" ]] || { log "FATAL file_bridge.py fehlt: $APP_DIR/file_bridge.py"; exit 1; }
 mkdir -p /data/ssh /data/.ssh
 cp -f "$KEY_SOURCE" "$KEY_DEST"
 chmod 600 "$KEY_DEST"
