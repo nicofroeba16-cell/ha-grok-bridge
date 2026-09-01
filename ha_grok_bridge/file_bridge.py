@@ -428,15 +428,18 @@ def process_ai_control(c,branch,dry):
             if not isinstance(command,dict): raise ValueError("command must be a JSON object")
             action=str(command.get("action","")).strip().lower()
             if action not in {"read","write","browse","sync"}: raise ValueError("unsupported action")
+            previous = snapshot(c) if action == "write" else None
             if action=="read": result=_control_read(command.get("path",""),c,str(command.get("encoding","utf-8")))
-            elif action=="write": result=write_file(command,c)
+            elif action=="write":
+                result=write_file(command,c)
+                prepare_from_config(c)
+                findings=secret_scan(WORK,c)
+                if findings:
+                    if previous is not None and bool(c.get("rollback_on_error", True)): restore_snapshot(previous,c)
+                    raise RuntimeError(f"SECRET SCAN BLOCKED: {len(findings)} finding(s): {', '.join(findings[:5])}")
             elif action=="browse": result=browse(command.get("path","."),c)
             else: result={"ok":True,"commit":remote_head(branch),"config_hash":treehash(CONFIG,c)}
             command_path.unlink(missing_ok=True); _control_result(results_dir,command_id,{"action":action,**result})
-            if action=="write":
-                findings=secret_scan(WORK,c)
-                if findings: raise RuntimeError(f"SECRET SCAN BLOCKED: {len(findings)} finding(s): {', '.join(findings[:5])}")
-                snapshot(c); prepare_from_config(c)
             push(branch,dry,c,message=f"AI control: {action} {command_id}")
             log(f"AI control: completed {action} {command_id}")
         except Exception as exc:
