@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# Slim-Shim: erlaubte ha-Befehle → Supervisor-API.
+set -euo pipefail
+
+TOKEN="${SUPERVISOR_TOKEN:-}"
+if [[ -z "$TOKEN" ]]; then
+  echo "ha-shim: SUPERVISOR_TOKEN fehlt" >&2
+  exit 1
+fi
+
+api() {
+  local method="$1" path="$2"
+  curl -sS -X "$method" \
+    -H "Authorization: Bearer ${TOKEN}" \
+    -H "Content-Type: application/json" \
+    --max-time 180 \
+    "http://supervisor${path}"
+}
+
+usage() {
+  echo "ha-shim 0.2.3 — info | core info|check|stats|restart | supervisor info | host info | resolution info" >&2
+  exit 2
+}
+
+case "${1:-}" in
+  info)
+    api GET /info
+    ;;
+  core)
+    case "${2:-}" in
+      info) api GET /core/info ;;
+      stats) api GET /core/stats ;;
+      check)
+        resp="$(api POST /core/check)"
+        echo "$resp"
+        python3 -c 'import json,sys; d=json.loads(sys.argv[1]); sys.exit(0 if d.get("result")=="ok" else 1)' "$resp"
+        ;;
+      restart) api POST /core/restart ;;
+      *) usage ;;
+    esac
+    ;;
+  supervisor)
+    [[ "${2:-}" == "info" ]] || usage
+    api GET /supervisor/info
+    ;;
+  host)
+    [[ "${2:-}" == "info" ]] || usage
+    api GET /host/info
+    ;;
+  resolution)
+    [[ "${2:-}" == "info" ]] || usage
+    api GET /resolution/info
+    ;;
+  *)
+    usage
+    ;;
+esac
