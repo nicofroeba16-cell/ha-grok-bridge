@@ -1,5 +1,5 @@
 name: HA File Sync Bridge
-version: "1.12"
+version: "1.13"
 description: Fully autonomous bidirectional Home Assistant /config synchronization with GitHub, AI command queue for read/write/browse/sync, arbitrary permitted files and nested paths, snapshots, rollback, conflict detection and secret protection
 slug: ha_grok_bridge
 url: https://github.com/nicofroeba16-cell/ha-grok-bridge
