@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib,http.server,json,os,re,shutil,subprocess,threading,time
 from datetime import datetime,timezone
 from pathlib import Path
-VERSION="1.0.4"; DATA=Path("/data"); CONFIG=Path("/config"); WORK=DATA/"bridge-work"; SNAPSHOTS=DATA/"snapshots"; OPTIONS=DATA/"options.json"; STATE=DATA/"state.json"; STATUS=DATA/"status.json"; LOCK=DATA/"sync.lock"; PORT=8099
+VERSION="1.0.5"; DATA=Path("/data"); CONFIG=Path("/config"); WORK=DATA/"bridge-work"; SNAPSHOTS=DATA/"snapshots"; OPTIONS=DATA/"options.json"; STATE=DATA/"state.json"; STATUS=DATA/"status.json"; LOCK=DATA/"sync.lock"; PORT=8099
 DEFAULT_EXCLUDED_NAMES={".git",".storage",".cloud",".HA_VERSION",".ssh",".cache","secrets.yaml","home-assistant_v2.db","home-assistant_v2.db-shm","home-assistant_v2.db-wal","home-assistant_v2.db-journal","home-assistant.log","home-assistant.log.1","home-assistant.log.fault"}
 DEFAULT_EXCLUDED_DIRS={"tts","media","backups"}; DEFAULT_EXCLUDED_SUFFIXES={".passphrase",".pem",".key",".p12",".pfx"}
 SENSITIVE_NAMES={"secrets.yaml",".env",".env.local",".env.production",".env.development","credentials.json","credentials.yaml","token.json","service-account.json","ha-grok-bridge.passphrase","ha-file-sync-bridge.passphrase"}; SENSITIVE_SUFFIXES=DEFAULT_EXCLUDED_SUFFIXES
@@ -35,7 +35,8 @@ def repo(url,b):
  if not (WORK/".git").is_dir():
   if WORK.exists(): shutil.rmtree(WORK)
   git(["clone","--no-checkout",url,str(WORK)],DATA); git(["checkout","-B",b,f"origin/{b}"])
- else: git(["remote","set-url","origin",url]); git(["fetch","--prune","origin"]); git(["checkout",b])
+ else:
+  git(["remote","set-url","origin",url]); git(["fetch","--prune","origin"]); git(["checkout","-B",b,f"origin/{b}"])
 def treehash(root,c):
  h=hashlib.sha256()
  if root.is_dir():
@@ -114,9 +115,10 @@ def sync(c,forced=None):
     if p.name==".git" or excluded(p.name,c): continue
     d=CONFIG/p.name; shutil.rmtree(d) if d.exists() and d.is_dir() else (d.unlink() if d.exists() else None); shutil.copytree(p,d,ignore=ignore(c)) if p.is_dir() else shutil.copy2(p,d)
   elif mode in {"ha_to_git","bidirectional"} and (lc or not last):
-   if tracked_sensitive(): raise RuntimeError("SECURITY BLOCKED: tracked sensitive path")
+   ts=tracked_sensitive()
+   if ts: raise RuntimeError(f"SECURITY BLOCKED: tracked sensitive path: {ts[0]}")
    snapshot(c); log(f"/config prepared: {to_work(c)} items"); f=secret_scan(c)
-   if f: raise RuntimeError(f"SECRET SCAN BLOCKED: {len(f)} finding(s)")
+   if f: raise RuntimeError(f"SECRET SCAN BLOCKED: {len(f)} finding(s): {', '.join(f[:5])}")
    push(b,dry)
   h=git(["rev-parse","HEAD"]).stdout.strip(); save(STATE,{**state(),"last_sync_commit":h,"last_config_hash":treehash(CONFIG,c),"last_success":now()}); status(state="idle",last_sync=h,error=None); log("sync complete")
  except Exception as e: status(state="error",error=str(e)); log(f"ERROR: {e}")
