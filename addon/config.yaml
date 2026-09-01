@@ -1,5 +1,5 @@
 name: HA Grok Bridge
-version: "0.5.0"
+version: "0.5.1"
 description: HA Grok Bridge file synchronization service
 slug: ha_grok_bridge
 url: https://github.com/nicofroeba16-cell/ha-grok-bridge
