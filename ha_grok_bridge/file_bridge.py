@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "1.10"
+VERSION = "1.11"
 DATA = Path("/data")
 CONFIG = Path("/config")
 WORK = DATA / "bridge-work"
@@ -34,6 +34,7 @@ SENSITIVE_NAMES = {"secrets.yaml", ".env", ".env.local", ".env.production", ".en
 SECRET_PATTERNS = [re.compile(r"-----BEGIN (?:OPENSSH|RSA|EC|DSA|PRIVATE) KEY-----"), re.compile(r"\bghp_[A-Za-z0-9]{20,}\b"), re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b"), re.compile(r"\bAKIA[0-9A-Z]{16}\b"), re.compile(r"\bAIza[0-9A-Za-z_-]{30,}\b"), re.compile(r"\bxox[baprs]-[0-9A-Za-z-]{20,}\b"), re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b")]
 CONFIG_SECRET_RE = re.compile(r'''(?im)^\s*(?:api[_-]?key|access[_-]?token|client[_-]?secret|private[_-]?key|password|passwd|secret|token)\s*[:=]\s*["']([^"']{12,})["']\s*(?:#.*)?$''')
 SCANNABLE = {".yaml", ".yml", ".json", ".env", ".ini", ".conf", ".cfg", ".toml", ".txt", ".sh"}
+MAX_READ_BYTES = 4 * 1024 * 1024
 
 
 def now():
@@ -314,7 +315,7 @@ def safe_config_path(raw_path, c):
     if not raw:
         raise ValueError("path is required")
     candidate = Path(raw)
-    if candidate.is_absolute() or any(part in {"", ".", ".."} for part in candidate.parts if part == "..") or ".." in candidate.parts:
+    if candidate.is_absolute() or ".." in candidate.parts:
         raise ValueError("invalid relative path")
     if ignored(candidate, c):
         raise ValueError("target path is excluded")
@@ -339,6 +340,25 @@ def write_file(body, c):
         data = str(body.get("content", "")).encode("utf-8")
     target.write_bytes(data)
     return {"ok": True, "path": "/config/" + target.relative_to(CONFIG).as_posix(), "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+
+
+def read_file(path_value, c, encoding="utf-8"):
+    target = safe_config_path(path_value, c)
+    if not target.exists() or not target.is_file():
+        raise ValueError("file not found")
+    size = target.stat().st_size
+    if size > MAX_READ_BYTES:
+        raise ValueError(f"file too large to read via API (max {MAX_READ_BYTES} bytes)")
+    data = target.read_bytes()
+    digest = hashlib.sha256(data).hexdigest()
+    rel = "/config/" + target.relative_to(CONFIG).as_posix()
+    if encoding.lower() == "base64":
+        return {"ok": True, "path": rel, "bytes": len(data), "sha256": digest, "encoding": "base64", "content_base64": base64.b64encode(data).decode("ascii")}
+    try:
+        content = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return {"ok": True, "path": rel, "bytes": len(data), "sha256": digest, "encoding": "base64", "content_base64": base64.b64encode(data).decode("ascii")}
+    return {"ok": True, "path": rel, "bytes": len(data), "sha256": digest, "encoding": "utf-8", "content": content}
 
 
 def browse(path_value, c):
@@ -429,6 +449,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self._json(200, load(STATUS, {"version": VERSION, "state": "unknown"}))
             elif parsed.path in {"/files", "/browse"}:
                 self._json(200, browse(query.get("path", ["."])[0], c))
+            elif parsed.path == "/read":
+                path = query.get("path", [""])[0]
+                encoding = query.get("encoding", ["utf-8"])[0]
+                self._json(200, read_file(path, c, encoding))
             elif parsed.path == "/state":
                 self._json(200, {"ok": True, **state()})
             elif parsed.path == "/sync":
