@@ -4,7 +4,8 @@ import hashlib,http.server,json,re,shutil,subprocess,threading,time
 from datetime import datetime,timezone
 from pathlib import Path
 from typing import Any
-VERSION="1.0.0"; DATA=Path('/data'); CONFIG=Path('/config'); WORK=DATA/'bridge-work'; SNAPSHOTS=DATA/'snapshots'; OPTIONS=DATA/'options.json'; STATE=DATA/'state.json'; STATUS=DATA/'status.json'; LOCK=DATA/'sync.lock'; PORT=8099
+VERSION="1.0.0"
+DATA=Path('/data'); CONFIG=Path('/config'); WORK=DATA/'bridge-work'; SNAPSHOTS=DATA/'snapshots'; OPTIONS=DATA/'options.json'; STATE=DATA/'state.json'; STATUS=DATA/'status.json'; LOCK=DATA/'sync.lock'; PORT=8099
 DEFAULT_EXCLUDED_NAMES={'.git','.storage','.cloud','.HA_VERSION','.ssh','.cache','secrets.yaml','home-assistant_v2.db','home-assistant_v2.db-shm','home-assistant_v2.db-wal','home-assistant_v2.db-journal','home-assistant.log','home-assistant.log.1','home-assistant.log.fault'}
 DEFAULT_EXCLUDED_DIRS={'tts','media','backups'}; DEFAULT_EXCLUDED_SUFFIXES={'.passphrase','.pem','.key','.p12','.pfx'}
 SECRET_PATTERNS=[re.compile(r'-----BEGIN (?:OPENSSH|RSA|EC|DSA|PRIVATE) KEY-----'),re.compile(r'(?i)\b(api[_-]?key|access[_-]?token|client[_-]?secret|private[_-]?key)\s*[:=]'),re.compile(r'(?i)\b(password|passwd|token|secret)\s*[:=]\s*[\'\"][^\'\"]+[\'\"]')]
