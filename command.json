@@ -1,4 +1,0 @@
-{
-  "id": "ios-next-deploy-preflight-20260902-1127",
-  "command": "git -C /config status --short"
-}
