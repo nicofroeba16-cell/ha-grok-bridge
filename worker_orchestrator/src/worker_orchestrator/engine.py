@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from hashlib import sha256
 from typing import Callable
 
@@ -13,6 +14,10 @@ from .worker import WorkerAdapter
 
 class ReportFormatError(Exception):
     """Raised when canonical report data cannot be rendered."""
+
+
+class DocumentationDriftError(RuntimeError):
+    """Raised when a canonical status destination cannot be written."""
 
 
 class Orchestrator:
@@ -194,7 +199,7 @@ class Orchestrator:
                 goal,
                 self._status_payload(goal, state, result, blockers, unapproved_gated),
             )
-            return state
+            return LifecycleState(self.registry.get(goal.key)["state"])
 
         if unchanged >= self.stalled_threshold:
             state = LifecycleState.STALLED
@@ -225,7 +230,7 @@ class Orchestrator:
                 goal,
                 self._status_payload(goal, state, result, blockers, []),
             )
-            return state
+            return LifecycleState(self.registry.get(goal.key)["state"])
 
         all_done = bool(required) and required.issubset(verified)
         ci_green = result.ci.upper() in {"GREEN", "SUCCESS", "PASS", "PASSED"}
@@ -256,7 +261,7 @@ class Orchestrator:
                 goal,
                 self._status_payload(goal, state, result, [], []),
             )
-            return state
+            return LifecycleState(self.registry.get(goal.key)["state"])
 
         blockers = list(result.blockers)
         if result.error:
@@ -288,7 +293,7 @@ class Orchestrator:
             goal,
             self._status_payload(goal, state, result, blockers, []),
         )
-        return state
+        return LifecycleState(self.registry.get(goal.key)["state"])
 
     def _status_payload(
         self,
@@ -298,6 +303,7 @@ class Orchestrator:
         blockers: list[str],
         user_gate: list[str],
     ) -> dict:
+        row = self.registry.get(goal.key)
         return {
             "state": state,
             "head": result.head,
@@ -308,26 +314,39 @@ class Orchestrator:
             "last_progress": result.progress,
             "next": result.next_step,
             "evidence": result.evidence,
+            "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "supersedes": row["last_report_fingerprint"] if row else "",
         }
 
     def _report(self, kind: str, goal: Goal, payload: dict) -> None:
         if not self.reporter:
             return
+        force = bool(payload.get("_force_report", False))
         safe_payload = sanitize(payload)
-        fingerprint = sha256(
-            json.dumps({"kind": kind, "payload": safe_payload}, sort_keys=True, default=str).encode()
-        ).hexdigest()
+        safe_payload.pop("_force_report", None)
+        fingerprint = report_fingerprint(kind, safe_payload)
+        safe_payload["fingerprint"] = fingerprint
         row = self.registry.get(goal.key)
-        if row is not None and row["last_report_fingerprint"] == fingerprint:
+        if row is not None and row["last_report_fingerprint"] == fingerprint and not force:
             return
         try:
             self.reporter(kind, goal, safe_payload)
         except ReportFormatError as exc:
             self._record_report_failure(goal, "REPORT_FORMAT_FAILED", exc)
             return
+        except DocumentationDriftError as exc:
+            self._record_report_failure(goal, "DOCUMENTATION_DRIFT", exc)
+            current = self.registry.get(goal.key)
+            if current is not None:
+                blockers = json.loads(current["blockers"] or "[]")
+                blockers = list(dict.fromkeys([*blockers, "DOCUMENTATION_DRIFT"]))
+                self.registry.set_state(goal.key, LifecycleState.BLOCKED, blockers=blockers,
+                                        last_progress="Canonical documentation destinations diverged; retry reconciliation.")
+            return
         except Exception as exc:
-            # Reporting is best-effort; a GitHub/API failure must not interrupt
-            # state persistence or release of the repository lock.
+            # Non-destination reporter errors remain retryable without changing
+            # the worker state; the dual-destination reporter raises the typed
+            # error above for actual partial writes.
             self._record_report_failure(goal, "REPORT_WRITE_FAILED", exc)
             return
         if row is not None:
@@ -339,6 +358,43 @@ class Orchestrator:
                 )
             except Exception as exc:
                 self._record_report_failure(goal, "REPORT_WRITE_FAILED", exc)
+
+    def reconcile_documentation(self, items: list[dict]) -> int:
+        """Repair missing/stale canonical statuses without executing workers."""
+        statuses = parse_canonical_statuses(items)
+        repaired = 0
+        for row in self.registry.list_all():
+            status = statuses.get(row["worker_key"])
+            expected = row["state"]
+            actual = status.get("STATE") if status else None
+            if status and actual == expected:
+                continue
+            goal = Goal(
+                project=row["project"], chat=row["chat"], repository=row["repository"],
+                branch=row["branch"], prompt=row["prompt"],
+                done_criteria=tuple(json.loads(row["done_criteria"])),
+                workstream_issue=row["workstream_issue"], explicit_version=row["goal_version"],
+                files=tuple(json.loads(row["files"])), scope=row["scope"],
+                approved_actions=tuple(json.loads(row["approved_actions"])),
+                source_comment_id=row["source_comment_id"],
+            )
+            result = WorkerResult(
+                head=row["last_head"], ci=row["ci_status"],
+                verified_criteria=tuple(json.loads(row["verified_criteria"] or "[]")),
+                blockers=tuple(json.loads(row["blockers"] or "[]")),
+                evidence=json.loads(row["completion_evidence"] or "{}"),
+                progress=row["last_progress"],
+            )
+            kind = "WORKER_DONE" if expected == LifecycleState.DONE else "WORKER_STATUS"
+            payload = self._status_payload(goal, LifecycleState(expected), result,
+                                           list(result.blockers),
+                                           list(json.loads(row["user_gate"] or "[]")))
+            if status and status.get("FINGERPRINT") == report_fingerprint(kind, payload):
+                continue
+            payload["_force_report"] = True
+            self._report(kind, goal, payload)
+            repaired += 1
+        return repaired
 
     def _record_report_failure(self, goal: Goal, kind: str, exc: Exception) -> None:
         # Do not advance the fingerprint: the next reconciliation may retry.
@@ -383,6 +439,9 @@ def format_report(kind: str, goal: Goal, payload: dict) -> str:
             "BLOCKERS: none",
             f"USER_ACTION_REQUIRED: {', '.join(payload.get('user_action_required', [])) or 'none'}",
             f"EVIDENCE: {json.dumps(payload.get('evidence', {}), sort_keys=True)}",
+            f"TIMESTAMP: {payload.get('timestamp', '')}",
+            f"SUPERSEDES: {payload.get('supersedes', '')}",
+            f"FINGERPRINT: {payload.get('fingerprint', '')}",
         ])
     return "\n".join([
         "WORKER_STATUS" if kind == "WORKER_STATUS" else kind,
@@ -399,4 +458,41 @@ def format_report(kind: str, goal: Goal, payload: dict) -> str:
         f"USER_ACTION_REQUIRED: {json.dumps(payload.get('user_action_required', []))}",
         f"LAST_PROGRESS: {payload.get('last_progress', '')}",
         f"NEXT: {payload.get('next', '')}",
+        f"EVIDENCE: {json.dumps(payload.get('evidence', {}), sort_keys=True)}",
+        f"TIMESTAMP: {payload.get('timestamp', '')}",
+        f"SUPERSEDES: {payload.get('supersedes', '')}",
+        f"FINGERPRINT: {payload.get('fingerprint', '')}",
     ])
+
+
+def report_fingerprint(kind: str, payload: dict) -> str:
+    """Hash only semantic report data; volatile linkage metadata is excluded."""
+    safe_payload = sanitize(payload)
+    fingerprint_payload = {
+        key: value for key, value in safe_payload.items()
+        if key not in {"timestamp", "supersedes", "fingerprint", "_force_report"}
+    }
+    return sha256(
+        json.dumps({"kind": kind, "payload": fingerprint_payload}, sort_keys=True, default=str).encode()
+    ).hexdigest()
+
+
+def parse_canonical_statuses(items: list[dict]) -> dict[str, dict]:
+    """Return the newest canonical status comment for each worker key."""
+    found: dict[str, dict] = {}
+    for item in items:
+        body = str(item.get("body", ""))
+        if not body.lstrip().startswith(("WORKER_STATUS", "WORKER_DONE", "WORKER_STALLED", "INTEGRATION_CONFLICT")):
+            continue
+        fields = {}
+        for line in body.splitlines():
+            if ":" in line:
+                key, value = line.split(":", 1)
+                fields[key.strip()] = value.strip()
+        project, chat = fields.get("PROJECT"), fields.get("CHAT")
+        if project and chat:
+            fields["_kind"] = body.lstrip().splitlines()[0].strip()
+            if fields["_kind"] == "WORKER_DONE":
+                fields["STATE"] = "DONE"
+            found[f"Projekt: {project} → Chat: {chat}"] = fields
+    return found

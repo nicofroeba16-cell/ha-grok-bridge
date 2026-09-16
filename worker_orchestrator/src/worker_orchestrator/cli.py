@@ -10,7 +10,7 @@ from hashlib import sha256
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from .engine import Orchestrator, format_report
+from .engine import DocumentationDriftError, Orchestrator, format_report
 from .github_client import GitHubClient
 from .models import DEFAULT_ALLOWED_REPOSITORIES, Goal, LifecycleState
 from .store import Registry
@@ -60,16 +60,25 @@ def make_reporter(gh: GitHubClient, master_repo: str, master_issue: int):
     def report(kind: str, goal: Goal, payload: dict) -> None:
         body = format_report(kind, goal, payload)
         target_issue = goal.workstream_issue or master_issue
-        if target_issue != master_issue:
-            gh.post_issue_comment(goal.repository, target_issue, body)
-        gh.post_issue_comment(master_repo, master_issue, body)
+        try:
+            if (goal.repository, target_issue) != (master_repo, master_issue):
+                gh.post_issue_comment(goal.repository, target_issue, body)
+            gh.post_issue_comment(master_repo, master_issue, body)
+        except Exception as exc:
+            raise DocumentationDriftError(str(exc)) from exc
 
     return report
 
 
 def reconcile(engine: Orchestrator, gh: GitHubClient, master_repo: str, master_issue: int) -> None:
     try:
-        engine.ingest_items(gh.read_master_items(master_repo, master_issue))
+        items = gh.read_master_items(master_repo, master_issue)
+        # Reconcile persisted workers before ingesting a newly assigned goal;
+        # otherwise a just-ingested goal would be posted twice in one poll
+        # because its new comment is not part of the already-read snapshot.
+        if hasattr(engine, "reconcile_documentation"):
+            engine.reconcile_documentation(items)
+        engine.ingest_items(items)
         rows = engine.registry.list_dispatchable()
     except Exception:
         # A failed poll must not take down the long-running daemon.

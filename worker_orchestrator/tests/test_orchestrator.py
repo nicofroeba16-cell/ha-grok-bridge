@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from worker_orchestrator.cli import main as cli_main, reconcile
+from worker_orchestrator.cli import main as cli_main, make_reporter, reconcile
 from worker_orchestrator.engine import Orchestrator, ReportFormatError, format_report
 from worker_orchestrator.goals import parse_goal_text, parse_goals
 from worker_orchestrator.models import Goal, LifecycleState, WorkerResult, normalize_worker_result
@@ -278,6 +278,74 @@ class Harness(unittest.TestCase):
         first = len(self.reports)
         engine.dispatch_goal(g)
         self.assertEqual(len(self.reports), first)
+
+    def test_canonical_transition_writes_both_destinations_once(self):
+        g = self.goal(workstream_issue=4)
+        calls = []
+        gh = type("GitHub", (), {"post_issue_comment": lambda _, repo, issue, body: calls.append((repo, issue, body))})()
+        reporter = make_reporter(gh, "owner/master", 3)
+        reporter("WORKER_STATUS", g, {"state": "RUNNING", "evidence": {}})
+        self.assertEqual([(call[0], call[1]) for call in calls],
+                         [(g.repository, 4), ("owner/master", 3)])
+
+    def test_partial_canonical_write_blocks_with_documentation_drift(self):
+        g = self.goal(workstream_issue=4)
+        calls = []
+        def post(_, repo, issue, body):
+            calls.append((repo, issue))
+            if issue == 3:
+                raise OSError("master unavailable")
+        gh = type("GitHub", (), {"post_issue_comment": post})()
+        self.registry.upsert_goal(g)
+        engine = Orchestrator(self.registry, ScriptedWorker([WorkerResult(progress="x")]),
+                              reporter=make_reporter(gh, "owner/master", 3))
+        self.assertEqual(engine.dispatch_goal(g), LifecycleState.BLOCKED)
+        self.assertIn("DOCUMENTATION_DRIFT", json.loads(self.registry.get(g.key)["blockers"]))
+        self.assertEqual(calls, [(g.repository, 4), ("owner/master", 3)])
+
+    def test_restart_reconciles_stale_canonical_status_without_worker_execution(self):
+        g = self.goal(workstream_issue=4)
+        self.registry.upsert_goal(g)
+        self.registry.set_state(g.key, LifecycleState.DONE, last_head="head", ci_status="GREEN",
+                                verified_criteria=list(g.done_criteria), completion_evidence={"tests": "ok"})
+        rendered = []
+        engine = Orchestrator(self.registry, ScriptedWorker([]),
+                               reporter=lambda kind, goal, payload: rendered.append((kind, payload)))
+        stale = [{"body": format_report("WORKER_STATUS", g, {"state": "RUNNING", "evidence": {}})}]
+        self.assertEqual(engine.reconcile_documentation(stale), 1)
+        self.assertEqual(len(rendered), 1)
+        self.assertEqual(rendered[0][0], "WORKER_DONE")
+        self.assertEqual(engine.worker.calls, 0)
+
+    def test_restart_with_current_fingerprint_does_not_republish(self):
+        g = self.goal(workstream_issue=4)
+        self.registry.upsert_goal(g)
+        worker = ScriptedWorker([WorkerResult(head="head", ci="GREEN", progress="done")])
+        rendered = []
+        engine = Orchestrator(self.registry, worker,
+                              reporter=lambda kind, goal, payload: rendered.append(
+                                  format_report(kind, goal, payload)))
+        engine.dispatch_goal(g)
+        current = [{"body": rendered[-1]}]
+        self.assertEqual(engine.reconcile_documentation(current), 0)
+        self.assertEqual(len(rendered), 1)
+        self.assertEqual(worker.calls, 1)
+
+    def test_missing_canonical_status_is_reconciled(self):
+        g = self.goal()
+        self.registry.upsert_goal(g)
+        rendered = []
+        engine = Orchestrator(self.registry, ScriptedWorker([]),
+                               reporter=lambda kind, goal, payload: rendered.append(kind))
+        self.assertEqual(engine.reconcile_documentation([]), 1)
+        self.assertEqual(rendered, ["WORKER_STATUS"])
+
+    def test_issue_number_collision_still_writes_distinct_repositories(self):
+        g = self.goal(workstream_issue=3)
+        calls = []
+        gh = type("GitHub", (), {"post_issue_comment": lambda _, repo, issue, body: calls.append((repo, issue))})()
+        make_reporter(gh, "owner/master", 3)("WORKER_STATUS", g, {"state": "RUNNING", "evidence": {}})
+        self.assertEqual(calls, [(g.repository, 3), ("owner/master", 3)])
 
     def test_secret_redaction_and_worker_environment_isolation(self):
         with patch.dict(
