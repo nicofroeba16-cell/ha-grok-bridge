@@ -59,8 +59,8 @@ def parse_goal_text(text: str, *, source_comment_id: int | None = None) -> Goal 
             fields[_normalize_field(match.group(1))] = match.group(2).strip()
 
     canonical_project, canonical_chat = _canonical_identifier(text)
-    project = fields.get("PROJECT") or fields.get("PROJEKT") or canonical_project
-    chat = fields.get("CHAT") or canonical_chat
+    project = canonical_project or fields.get("PROJECT") or fields.get("PROJEKT") or ""
+    chat = canonical_chat or fields.get("CHAT") or ""
     repository = fields.get("REPOSITORY") or fields.get("REPO") or ""
     branch = fields.get("BRANCH", "")
     done = _criteria(lines)
