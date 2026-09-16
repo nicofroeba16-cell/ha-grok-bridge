@@ -87,34 +87,24 @@ class CommandWorkerAdapter:
                 "goal.approved_actions; otherwise return it in requested_actions."
             ),
         }
-        workspace, workspace_error = self._workspace(goal)
+        try:
+            workspace, workspace_error = self._workspace(goal)
+        except Exception as exc:
+            return WorkerResult(error="WORKSPACE_PREP_FAILED", blockers=("WORKSPACE_PREP_FAILED",), evidence={"reason": str(exc)[:240]})
         if workspace_error:
-            return WorkerResult(error=workspace_error, blockers=(workspace_error,))
+            return WorkerResult(error=workspace_error, blockers=(workspace_error,), evidence={"reason": workspace_error})
         payload["workspace"] = str(workspace) if workspace else ""
-        proc = subprocess.run(
-            self.argv,
-            input=json.dumps(payload),
-            text=True,
-            capture_output=True,
-            timeout=1800,
-            check=False,
-            env=self._env(),
-            cwd=workspace,
-        )
+        try:
+            proc = subprocess.run(
+                self.argv, input=json.dumps(payload), text=True, capture_output=True,
+                timeout=1800, check=False, env=self._env(), cwd=workspace,
+            )
+        except Exception as exc:
+            return WorkerResult(error="WORKER_EXECUTION_FAILED", blockers=("WORKER_EXECUTION_FAILED",), evidence={"reason": str(exc)[:240]})
         if proc.returncode != 0:
-            return WorkerResult(error=f"worker command failed with exit code {proc.returncode}")
+            return WorkerResult(error="WORKER_EXECUTION_FAILED", blockers=("WORKER_EXECUTION_FAILED",), evidence={"exit_code": proc.returncode})
         try:
             data = json.loads(proc.stdout)
-        except json.JSONDecodeError:
-            return WorkerResult(error="worker command returned invalid JSON")
-        data = sanitize(data)
-        allowed = set(WorkerResult.__dataclass_fields__)
-        clean = {k: v for k, v in data.items() if k in allowed}
-        if "evidence" in clean and not isinstance(clean["evidence"], dict):
-            clean["evidence"] = {"details": clean["evidence"]}
-        if "session_state" in clean and not isinstance(clean["session_state"], dict):
-            clean["session_state"] = {}
-        for field in ("verified_criteria", "blockers", "requested_actions", "changed_files"):
-            if field in clean:
-                clean[field] = tuple(clean[field])
-        return WorkerResult(**clean)
+        except (json.JSONDecodeError, TypeError, ValueError) as exc:
+            return WorkerResult(error="WORKER_RESULT_INVALID", blockers=("WORKER_RESULT_INVALID",), evidence={"reason": str(exc)[:240]})
+        return WorkerResult.normalize(sanitize(data))

@@ -5,10 +5,14 @@ from hashlib import sha256
 from typing import Callable
 
 from .goals import parse_goals
-from .models import GATED_ACTIONS, Goal, LifecycleState, WorkerResult
+from .models import DEFAULT_ALLOWED_REPOSITORIES, GATED_ACTIONS, Goal, LifecycleState, WorkerResult
 from .security import sanitize
 from .store import Registry
 from .worker import WorkerAdapter
+
+
+class ReportFormatError(Exception):
+    """Raised when canonical report data cannot be rendered."""
 
 
 class Orchestrator:
@@ -29,14 +33,14 @@ class Orchestrator:
         self.dry_run = dry_run
         self.stalled_threshold = max(2, stalled_threshold)
         self.ci_verifier = ci_verifier
-        self.allowed_repositories = allowed_repositories
+        self.allowed_repositories = set(DEFAULT_ALLOWED_REPOSITORIES if allowed_repositories is None else allowed_repositories)
 
     def ingest_items(self, items: list[dict]) -> list[Goal]:
         accepted: list[Goal] = []
         for goal in parse_goals(items):
             if not goal.repository or not goal.branch:
                 continue
-            if self.allowed_repositories is not None and goal.repository not in self.allowed_repositories:
+            if goal.repository not in self.allowed_repositories:
                 changed, _ = self.registry.upsert_goal(goal)
                 self.registry.set_state(
                     goal.key,
@@ -77,7 +81,7 @@ class Orchestrator:
         if row["state"] in (LifecycleState.DONE, LifecycleState.WAITING_FOR_USER, LifecycleState.STALLED):
             return LifecycleState(row["state"])
 
-        if goal.branch.lower() in {"main", "master"} and not ({"merge", "runtime_mutation"} & {x.lower() for x in goal.approved_actions}):
+        if goal.branch.lower() in {"main", "master"} and not ({"base_branch_mutation", "main_mutation", "master_mutation"} & {x.lower() for x in goal.approved_actions}):
             blockers = ["BASE_BRANCH_GUARD"]
             self.registry.set_state(goal.key, LifecycleState.BLOCKED, blockers=blockers, last_progress="Direct base-branch work rejected.")
             self._report("WORKER_STATUS", goal, {"state": LifecycleState.BLOCKED, "blockers": blockers, "next": "assign a workstream branch"})
@@ -115,14 +119,40 @@ class Orchestrator:
                 execution_count=row["execution_count"] + 1,
             )
             previous = self._row_as_safe_dict(self.registry.get(goal.key))
-            result = self.worker.execute(goal, previous, dry_run=self.dry_run)
-            result = self._sanitize_result(result)
+            try:
+                result = WorkerResult.normalize(
+                    self.worker.execute(goal, previous, dry_run=self.dry_run)
+                )
+            except Exception as exc:
+                result = WorkerResult(
+                    error="WORKER_EXECUTION_FAILED",
+                    blockers=("WORKER_EXECUTION_FAILED",),
+                    evidence={"reason": sanitize(f"{type(exc).__name__}: {exc}")[:240]},
+                )
+            if result.error.startswith("WORKSPACE_") and result.error != "WORKSPACE_PREP_FAILED":
+                result.error = "WORKSPACE_PREP_FAILED"
+                result.blockers = tuple(dict.fromkeys(("WORKSPACE_PREP_FAILED", *result.blockers)))
             if self.ci_verifier and result.head:
                 try:
                     result.ci = self.ci_verifier(goal.repository, result.head)
                 except Exception:
                     result.ci = "UNKNOWN"
-            return self._evaluate(goal, result)
+            try:
+                return self._evaluate(goal, result)
+            except Exception as exc:
+                result = WorkerResult(
+                    error="ORCHESTRATOR_INTERNAL_ERROR",
+                    blockers=("ORCHESTRATOR_INTERNAL_ERROR",),
+                    evidence={"reason": sanitize(str(exc))[:240]},
+                )
+                self.registry.set_state(
+                    goal.key, LifecycleState.BLOCKED,
+                    blockers=list(result.blockers), last_progress=result.error,
+                    completion_evidence=result.evidence,
+                    error_signature=result.error_signature(),
+                )
+                self.registry.record_event(goal.key, goal.version, result.error, result.evidence)
+                return LifecycleState.BLOCKED
         finally:
             self.registry.release_lock(goal.key)
 
@@ -290,13 +320,32 @@ class Orchestrator:
         row = self.registry.get(goal.key)
         if row is not None and row["last_report_fingerprint"] == fingerprint:
             return
-        self.reporter(kind, goal, safe_payload)
+        try:
+            self.reporter(kind, goal, safe_payload)
+        except ReportFormatError as exc:
+            self._record_report_failure(goal, "REPORT_FORMAT_FAILED", exc)
+            return
+        except Exception as exc:
+            # Reporting is best-effort; a GitHub/API failure must not interrupt
+            # state persistence or release of the repository lock.
+            self._record_report_failure(goal, "REPORT_WRITE_FAILED", exc)
+            return
         if row is not None:
-            self.registry.set_state(
-                goal.key,
-                LifecycleState(row["state"]),
-                last_report_fingerprint=fingerprint,
-            )
+            try:
+                self.registry.set_state(
+                    goal.key,
+                    LifecycleState(row["state"]),
+                    last_report_fingerprint=fingerprint,
+                )
+            except Exception as exc:
+                self._record_report_failure(goal, "REPORT_WRITE_FAILED", exc)
+
+    def _record_report_failure(self, goal: Goal, kind: str, exc: Exception) -> None:
+        # Do not advance the fingerprint: the next reconciliation may retry.
+        try:
+            self.registry.record_event(goal.key, goal.version, kind, {"reason": str(exc)[:240]})
+        except Exception:
+            pass
 
     @staticmethod
     def _row_as_safe_dict(row) -> dict:
@@ -318,20 +367,9 @@ class Orchestrator:
                     pass
         return sanitize(out)
 
-    @staticmethod
-    def _sanitize_result(result: WorkerResult) -> WorkerResult:
-        result.blockers = tuple(sanitize(result.blockers))
-        result.requested_actions = tuple(sanitize(result.requested_actions))
-        result.evidence = sanitize(result.evidence)
-        result.progress = sanitize(result.progress)
-        result.next_step = sanitize(result.next_step)
-        result.error = sanitize(result.error)
-        result.changed_files = tuple(sanitize(result.changed_files))
-        result.session_state = sanitize(result.session_state)
-        return result
-
-
 def format_report(kind: str, goal: Goal, payload: dict) -> str:
+    if not isinstance(payload, dict) or not isinstance(payload.get("evidence", {}), dict):
+        raise ReportFormatError("report payload is not canonical")
     if kind == "WORKER_DONE":
         return "\n".join([
             "WORKER_DONE",

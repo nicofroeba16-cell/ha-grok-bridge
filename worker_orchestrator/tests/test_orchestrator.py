@@ -10,10 +10,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from worker_orchestrator.cli import main as cli_main
-from worker_orchestrator.engine import Orchestrator, format_report
+from worker_orchestrator.cli import main as cli_main, reconcile
+from worker_orchestrator.engine import Orchestrator, ReportFormatError, format_report
 from worker_orchestrator.goals import parse_goal_text, parse_goals
-from worker_orchestrator.models import Goal, LifecycleState, WorkerResult
+from worker_orchestrator.models import Goal, LifecycleState, WorkerResult, normalize_worker_result
 from worker_orchestrator.security import redact_text
 from worker_orchestrator.store import Registry
 from worker_orchestrator.worker import CommandWorkerAdapter
@@ -394,6 +394,128 @@ class Harness(unittest.TestCase):
         result = CommandWorkerAdapter(f"{sys.executable} {script}").execute(self.goal(), {}, dry_run=True)
         self.assertEqual(result.evidence, {"details": ["one", "two"]})
         self.assertEqual(result.session_state, {})
+
+    def test_engine_centrally_normalizes_malformed_worker_result(self):
+        g = self.goal()
+        worker = ScriptedWorker([{
+            "head": 123,
+            "ci": None,
+            "blockers": "not-a-list",
+            "evidence": ["unsafe-shape"],
+            "ready": "yes",
+        }])
+        engine = self.engine(worker)
+        self.registry.upsert_goal(g)
+        state = engine.dispatch_goal(g)
+        self.assertEqual(state, LifecycleState.BLOCKED)
+        row = self.registry.get(g.key)
+        self.assertEqual(row["ci_status"], "UNKNOWN")
+        evidence = json.loads(row["completion_evidence"])
+        self.assertEqual(evidence.get("reason"), "head is not a string")
+
+    def test_worker_exception_isolated_and_lock_released(self):
+        g = self.goal()
+
+        class ExplodingWorker:
+            def execute(self, goal, previous, *, dry_run):
+                raise RuntimeError("worker failure")
+
+        engine = self.engine(ExplodingWorker())
+        self.registry.upsert_goal(g)
+        self.assertEqual(engine.dispatch_goal(g), LifecycleState.BLOCKED)
+        self.assertIn("WORKER_EXECUTION_FAILED", self.registry.get(g.key)["blockers"])
+        self.assertEqual(self.registry.conn.execute("SELECT COUNT(*) FROM locks").fetchone()[0], 0)
+
+    def test_reporting_exception_does_not_abort_dispatch(self):
+        g = self.goal()
+        worker = ScriptedWorker([WorkerResult(progress="reported")])
+
+        def broken_reporter(*args):
+            raise RuntimeError("GitHub unavailable")
+
+        engine = Orchestrator(self.registry, worker, reporter=broken_reporter)
+        self.registry.upsert_goal(g)
+        self.assertEqual(engine.dispatch_goal(g), LifecycleState.RUNNING)
+        self.assertEqual(worker.calls, 1)
+        self.assertEqual(self.registry.get(g.key)["state"], "RUNNING")
+
+    def test_worker_result_normalization_contract_variants(self):
+        for evidence, expected in (
+            ({"key": "value"}, {"key": "value"}),
+            (["one"], {"details": ["one"]}),
+            ("text", {"details": "text"}),
+            (None, {}),
+            ([], {"details": []}),
+            ("", {}),
+        ):
+            with self.subTest(evidence=evidence):
+                result = normalize_worker_result({
+                    "head": "h", "ci": None, "evidence": evidence,
+                    "verified_criteria": "criterion", "blockers": None,
+                    "requested_actions": [], "changed_files": "file.py",
+                    "ready": "TrUe", "session_state": ["wrong"], "ignored": object(),
+                })
+                self.assertEqual(result.evidence, expected)
+                self.assertEqual(result.ci, "UNKNOWN")
+                self.assertEqual(result.verified_criteria, ("criterion",))
+                self.assertEqual(result.changed_files, ("file.py",))
+                self.assertTrue(result.ready)
+                self.assertEqual(result.session_state, {})
+                self.assertEqual(result.error, "")
+
+    def test_unsafe_worker_result_becomes_structured_invalid(self):
+        for raw in (
+            None, [], {"head": 1}, {"verified_criteria": ["ok", 2]},
+            {"evidence": 3}, {"ready": "maybe"}, {"ci": object()},
+        ):
+            with self.subTest(raw=raw):
+                result = normalize_worker_result(raw)
+                self.assertEqual(result.error, "WORKER_RESULT_INVALID")
+                self.assertEqual(result.blockers, ("WORKER_RESULT_INVALID",))
+                self.assertIsInstance(result.evidence, dict)
+
+    def test_report_format_failure_is_recorded_and_retryable(self):
+        g = self.goal()
+        self.registry.upsert_goal(g)
+        engine = Orchestrator(self.registry, ScriptedWorker([WorkerResult()]), reporter=lambda *args: (_ for _ in ()).throw(ReportFormatError("bad format")))
+        engine.dispatch_goal(g)
+        events = self.registry.events(g.key)
+        self.assertTrue(any(event["event_type"] == "REPORT_FORMAT_FAILED" for event in events))
+        self.assertEqual(self.registry.get(g.key)["last_report_fingerprint"], "")
+
+    def test_reconcile_continues_after_worker_failure(self):
+        first = self.goal(project="A", chat="One")
+        second = self.goal(project="B", chat="Two", scope="other")
+        self.registry.upsert_goal(first)
+        self.registry.upsert_goal(second)
+
+        class AThenB:
+            def __init__(self):
+                self.calls = []
+            def execute(self, goal, previous, *, dry_run):
+                self.calls.append(goal.project)
+                if goal.project == "A":
+                    raise RuntimeError("A failed")
+                return WorkerResult(progress="B proceeded")
+
+        worker = AThenB()
+        engine = self.engine(worker)
+
+        class FakeGitHub:
+            def read_master_items(self, repo, issue):
+                return []
+
+        reconcile(engine, FakeGitHub(), "owner/repo", 1)
+        self.assertEqual(worker.calls, ["A", "B"])
+        self.assertEqual(self.registry.get(first.key)["state"], "BLOCKED")
+        self.assertEqual(self.registry.get(second.key)["state"], "RUNNING")
+        self.assertEqual(self.registry.conn.execute("SELECT COUNT(*) FROM locks").fetchone()[0], 0)
+
+    def test_reconcile_survives_github_poll_failure(self):
+        class BrokenGitHub:
+            def read_master_items(self, repo, issue):
+                raise OSError("offline")
+        reconcile(self.engine(ScriptedWorker([WorkerResult()])), BrokenGitHub(), "owner/repo", 1)
 
 
 if __name__ == "__main__":

@@ -102,15 +102,9 @@ class Registry:
     def upsert_goal(self, goal: Goal):
         current = self.get(goal.key)
         if current is not None:
-            current_source = current["source_comment_id"]
-            incoming_source = goal.source_comment_id
-            if current_source is not None and incoming_source is None:
-                return False, current
-            if current_source is not None and incoming_source is not None and incoming_source < current_source:
-                return False, current
-            if current_source is not None and incoming_source is not None and incoming_source == current_source:
-                return False, current
-            if current["goal_hash"] == goal.hash:
+            current_source = -1 if current["source_comment_id"] is None else current["source_comment_id"]
+            incoming_source = -1 if goal.source_comment_id is None else goal.source_comment_id
+            if incoming_source < current_source or current["goal_hash"] == goal.hash:
                 return False, current
         is_new_version = True
         with self.tx() as c:

@@ -12,7 +12,7 @@ from pathlib import Path
 
 from .engine import Orchestrator, format_report
 from .github_client import GitHubClient
-from .models import Goal
+from .models import DEFAULT_ALLOWED_REPOSITORIES, Goal, LifecycleState
 from .store import Registry
 from .worker import CommandWorkerAdapter
 
@@ -23,6 +23,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--master-repo", default=os.environ.get("MASTER_REPO", "nicofroeba16-cell/ha-grok-bridge"))
     parser.add_argument("--master-issue", type=int, default=int(os.environ.get("MASTER_ISSUE", "3")))
     parser.add_argument("--worker-command", default=os.environ.get("WORKER_COMMAND", ""))
+    parser.add_argument("--workspace-root", default=os.environ.get("WORKSPACE_ROOT", "/home/vboxuser/.local/share/worker-orchestrator/workspaces"))
     parser.add_argument("--poll-seconds", type=int, default=int(os.environ.get("RECONCILE_SECONDS", "300")))
     parser.add_argument(
         "--allow-non-dry-run",
@@ -67,9 +68,29 @@ def make_reporter(gh: GitHubClient, master_repo: str, master_issue: int):
 
 
 def reconcile(engine: Orchestrator, gh: GitHubClient, master_repo: str, master_issue: int) -> None:
-    engine.ingest_items(gh.read_master_items(master_repo, master_issue))
-    for row in engine.registry.list_dispatchable():
-        engine.dispatch_goal(_goal_from_row(row))
+    try:
+        engine.ingest_items(gh.read_master_items(master_repo, master_issue))
+        rows = engine.registry.list_dispatchable()
+    except Exception:
+        # A failed poll must not take down the long-running daemon.
+        return
+    for row in rows:
+        try:
+            engine.dispatch_goal(_goal_from_row(row))
+        except Exception as exc:
+            # Isolate one broken assignment from the remaining workers.
+            try:
+                goal = _goal_from_row(row)
+                engine.registry.set_state(
+                    goal.key, LifecycleState.BLOCKED,
+                    blockers=["ORCHESTRATOR_INTERNAL_ERROR"],
+                    last_progress="ORCHESTRATOR_INTERNAL_ERROR",
+                )
+                engine.registry.record_event(
+                    goal.key, goal.version, "ORCHESTRATOR_INTERNAL_ERROR", {"reason": str(exc)[:240]}
+                )
+            except Exception:
+                pass
 
 
 def webhook_server(host: str, port: int, wake: threading.Event, secret: str):
@@ -137,14 +158,14 @@ def main(argv: list[str] | None = None) -> int:
     allowed_repos_env = os.environ.get("ALLOWED_REPOSITORIES", "")
     allowed_repos = {
         x.strip() for x in allowed_repos_env.split(",") if x.strip()
-    } or {args.master_repo}
+    } or set(DEFAULT_ALLOWED_REPOSITORIES)
 
     engine = Orchestrator(
         registry,
         CommandWorkerAdapter(
             args.worker_command,
             env_allowlist=worker_env,
-            workspace_root=os.environ.get("WORKSPACE_ROOT", "/home/vboxuser/.local/share/worker-orchestrator/workspaces"),
+            workspace_root=args.workspace_root,
         ),
         reporter=make_reporter(gh, args.master_repo, args.master_issue),
         dry_run=not args.allow_non_dry_run,
