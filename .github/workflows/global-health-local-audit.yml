@@ -1,0 +1,200 @@
+name: Global Health Local Workspace Audit
+
+on:
+  push:
+    branches:
+      - audit/global-health-local-workspaces-20260916
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: self-hosted
+    timeout-minutes: 10
+    steps:
+      - name: Read-only workspace audit
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from __future__ import annotations
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import shutil
+          import subprocess
+
+          DOCS = Path("/home/vboxuser/Documents/ChatGPT/HomeAssistant")
+          LIB = Path("/home/vboxuser/Library/HomeAssistant")
+          PROJECTS = ["AmazonTV-App", "HA-CONFIG", "iOS-Next", "local-fix-validation"]
+          EXCLUDED_DIRS = {
+              ".git", ".gradle", "build", "DerivedData", "__pycache__", ".pytest_cache",
+              ".cache", "node_modules", ".build", ".swiftpm", "Pods", ".venv", "venv",
+          }
+          SENSITIVE_NAMES = {
+              "secrets.yaml", ".env", ".env.local", ".env.production", ".env.development",
+              "credentials.json", "credentials.yaml", "token.json", "service-account.json",
+          }
+          SENSITIVE_SUFFIXES = {".key", ".pem", ".p12", ".pfx", ".mobileprovision"}
+
+          def sensitive(rel: Path) -> bool:
+              return any(part in EXCLUDED_DIRS or part in SENSITIVE_NAMES for part in rel.parts) or rel.suffix.lower() in SENSITIVE_SUFFIXES
+
+          def inventory(root: Path):
+              files = {}
+              skipped_large = 0
+              if not root.is_dir():
+                  return files, skipped_large
+              for p in root.rglob("*"):
+                  if not p.is_file():
+                      continue
+                  rel = p.relative_to(root)
+                  if sensitive(rel):
+                      continue
+                  try:
+                      size = p.stat().st_size
+                      if size > 32 * 1024 * 1024:
+                          skipped_large += 1
+                          continue
+                      h = hashlib.sha256()
+                      with p.open("rb") as fh:
+                          for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                              h.update(chunk)
+                      files[rel.as_posix()] = {"sha256": h.hexdigest(), "bytes": size}
+                  except (OSError, PermissionError):
+                      continue
+              return files, skipped_large
+
+          def digest(files):
+              h = hashlib.sha256()
+              for rel in sorted(files):
+                  item = files[rel]
+                  h.update(rel.encode() + b"\0" + item["sha256"].encode() + b"\0")
+              return h.hexdigest()
+
+          def compare(a, b):
+              ka, kb = set(a), set(b)
+              shared = ka & kb
+              changed = sorted(k for k in shared if a[k]["sha256"] != b[k]["sha256"])
+              return {
+                  "identical_tree": a == b,
+                  "shared_paths": len(shared),
+                  "identical_shared": len(shared) - len(changed),
+                  "changed_shared": len(changed),
+                  "only_left": len(ka - kb),
+                  "only_right": len(kb - ka),
+                  "changed_path_sample": changed[:20],
+                  "left_only_sample": sorted(ka - kb)[:20],
+                  "right_only_sample": sorted(kb - ka)[:20],
+              }
+
+          def git_meta(root: Path):
+              if not (root / ".git").exists():
+                  return {"is_git_repo": False}
+              def run(*args):
+                  p = subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, timeout=20)
+                  return p.stdout.strip() if p.returncode == 0 else None
+              raw = run("status", "--porcelain") or ""
+              safe_status = []
+              for line in raw.splitlines():
+                  path = line[3:] if len(line) > 3 else ""
+                  if path and not sensitive(Path(path)):
+                      safe_status.append(line)
+              return {
+                  "is_git_repo": True,
+                  "branch": run("branch", "--show-current"),
+                  "head": run("rev-parse", "HEAD"),
+                  "origin": run("remote", "get-url", "origin"),
+                  "dirty_count": len(raw.splitlines()),
+                  "safe_status_sample": safe_status[:20],
+              }
+
+          result = {"projects": {}, "runner_workspaces": [], "absolute_path_references": {}}
+
+          for name in PROJECTS:
+              left = DOCS / name
+              right = LIB / name
+              li, lskip = inventory(left)
+              ri, rskip = inventory(right)
+              result["projects"][name] = {
+                  "documents": {
+                      "exists": left.exists(), "is_symlink": left.is_symlink(),
+                      "file_count": len(li), "bytes": sum(v["bytes"] for v in li.values()),
+                      "tree_sha256": digest(li), "skipped_large": lskip,
+                      "git": git_meta(left),
+                  },
+                  "library": {
+                      "exists": right.exists(), "is_symlink": right.is_symlink(),
+                      "file_count": len(ri), "bytes": sum(v["bytes"] for v in ri.values()),
+                      "tree_sha256": digest(ri), "skipped_large": rskip,
+                      "git": git_meta(right),
+                  },
+                  "comparison": compare(li, ri),
+              }
+
+          local_ios = DOCS / "iOS-Next"
+          local_files, _ = inventory(local_ios)
+          native_tmp = Path("/tmp/global-health-native-ios")
+          shutil.rmtree(native_tmp, ignore_errors=True)
+          native_result = {"clone_ok": False}
+          try:
+              subprocess.run([
+                  "git", "clone", "--quiet", "--depth", "1", "--branch", "codex/ios27-owner-control",
+                  "https://github.com/nicofroeba16-cell/ha-ios-next-ios.git", str(native_tmp)
+              ], check=True, timeout=120)
+              native_files, _ = inventory(native_tmp)
+              native_result = {
+                  "clone_ok": True,
+                  "head": subprocess.check_output(["git", "-C", str(native_tmp), "rev-parse", "HEAD"], text=True).strip(),
+                  "file_count": len(native_files),
+                  "tree_sha256": digest(native_files),
+                  "comparison_to_local_ios": compare(local_files, native_files),
+              }
+          except Exception as exc:
+              native_result = {"clone_ok": False, "error_type": type(exc).__name__}
+          finally:
+              shutil.rmtree(native_tmp, ignore_errors=True)
+          result["unversioned_ios_vs_native"] = native_result
+
+          runner_root = Path("/home/vboxuser/actions-runners")
+          if runner_root.is_dir():
+              for cfg in sorted(runner_root.glob("*/.runner")):
+                  try:
+                      data = json.loads(cfg.read_text(encoding="utf-8-sig"))
+                      work = cfg.parent / str(data.get("workFolder", "_work"))
+                      result["runner_workspaces"].append({
+                          "agent": data.get("agentName"),
+                          "runner_root": str(cfg.parent),
+                          "work_folder": str(work),
+                          "points_into_documents": str(work).startswith(str(DOCS)),
+                          "points_into_library": str(work).startswith(str(LIB)),
+                      })
+                  except Exception:
+                      continue
+
+          needles = [str(DOCS), str(LIB)]
+          refs = {needle: [] for needle in needles}
+          scan_roots = [DOCS, LIB]
+          for root in scan_roots:
+              if not root.is_dir():
+                  continue
+              for p in root.rglob("*"):
+                  if not p.is_file():
+                      continue
+                  try:
+                      rel = p.relative_to(root)
+                      if sensitive(rel) or p.stat().st_size > 2 * 1024 * 1024:
+                          continue
+                      text = p.read_text(encoding="utf-8", errors="ignore")
+                  except (OSError, PermissionError):
+                      continue
+                  for needle in needles:
+                      if needle in text and len(refs[needle]) < 50:
+                          refs[needle].append(str(p))
+          result["absolute_path_references"] = {k: {"count_capped": len(v), "files": v} for k, v in refs.items()}
+
+          print("GLOBAL_HEALTH_LOCAL_AUDIT_BEGIN")
+          print(json.dumps(result, indent=2, sort_keys=True))
+          print("GLOBAL_HEALTH_LOCAL_AUDIT_END")
+          PY
