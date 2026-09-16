@@ -474,6 +474,51 @@ class Harness(unittest.TestCase):
                 self.assertEqual(result.blockers, ("WORKER_RESULT_INVALID",))
                 self.assertIsInstance(result.evidence, dict)
 
+    def test_each_worker_result_field_shape_failure_is_structured(self):
+        valid = {
+            "head": "head",
+            "ci": "GREEN",
+            "verified_criteria": ["criterion"],
+            "blockers": ["blocker"],
+            "requested_actions": ["inspect"],
+            "evidence": {"tests": "green"},
+            "progress": "progress",
+            "next_step": "next",
+            "ready": True,
+            "error": "error",
+            "changed_files": ["file.py"],
+            "session_state": {"phase": "test"},
+        }
+        malformed = {
+            "head": 1,
+            "ci": [],
+            "verified_criteria": ["ok", 2],
+            "blockers": {"not": "a collection"},
+            "requested_actions": [False],
+            "evidence": 3,
+            "progress": {},
+            "next_step": ["not a string"],
+            "ready": object(),
+            "error": 4,
+            "changed_files": [Path("file.py")],
+        }
+        for field, bad_value in malformed.items():
+            with self.subTest(field=field):
+                raw = dict(valid)
+                raw[field] = bad_value
+                result = normalize_worker_result(raw)
+                self.assertEqual(result.error, "WORKER_RESULT_INVALID")
+                self.assertEqual(result.blockers, ("WORKER_RESULT_INVALID",))
+                self.assertTrue(result.evidence.get("reason"), field)
+
+    def test_malformed_worker_result_instance_is_normalized(self):
+        raw = WorkerResult()
+        raw.head = 1
+        result = normalize_worker_result(raw)
+        self.assertEqual(result.error, "WORKER_RESULT_INVALID")
+        self.assertEqual(result.blockers, ("WORKER_RESULT_INVALID",))
+        self.assertIn("head", result.evidence["reason"])
+
     def test_report_format_failure_is_recorded_and_retryable(self):
         g = self.goal()
         self.registry.upsert_goal(g)
@@ -482,6 +527,41 @@ class Harness(unittest.TestCase):
         events = self.registry.events(g.key)
         self.assertTrue(any(event["event_type"] == "REPORT_FORMAT_FAILED" for event in events))
         self.assertEqual(self.registry.get(g.key)["last_report_fingerprint"], "")
+
+    def test_report_fingerprint_persistence_failure_does_not_abort_dispatch(self):
+        g = self.goal()
+        self.registry.upsert_goal(g)
+        real_set_state = self.registry.set_state
+
+        def fail_fingerprint_write(worker_key, state, **fields):
+            if "last_report_fingerprint" in fields:
+                raise OSError("state database temporarily unavailable")
+            return real_set_state(worker_key, state, **fields)
+
+        with patch.object(self.registry, "set_state", side_effect=fail_fingerprint_write):
+            engine = self.engine(ScriptedWorker([WorkerResult(progress="persisted")]))
+            self.assertEqual(engine.dispatch_goal(g), LifecycleState.RUNNING)
+        self.assertEqual(self.registry.get(g.key)["state"], "RUNNING")
+        self.assertEqual(self.registry.get(g.key)["last_report_fingerprint"], "")
+        self.assertTrue(any(event["event_type"] == "REPORT_WRITE_FAILED" for event in self.registry.events(g.key)))
+
+    def test_report_failure_event_failure_is_swallowed(self):
+        g = self.goal()
+        self.registry.upsert_goal(g)
+        real_record_event = self.registry.record_event
+
+        def fail_report_event(worker_key, version, event_type, payload):
+            if event_type == "REPORT_WRITE_FAILED":
+                raise OSError("event database temporarily unavailable")
+            return real_record_event(worker_key, version, event_type, payload)
+
+        with patch.object(self.registry, "record_event", side_effect=fail_report_event):
+            engine = Orchestrator(
+                self.registry,
+                ScriptedWorker([WorkerResult(progress="still running")]),
+                reporter=lambda *args: (_ for _ in ()).throw(RuntimeError("API unavailable")),
+            )
+            self.assertEqual(engine.dispatch_goal(g), LifecycleState.RUNNING)
 
     def test_reconcile_continues_after_worker_failure(self):
         first = self.goal(project="A", chat="One")
@@ -516,6 +596,45 @@ class Harness(unittest.TestCase):
             def read_master_items(self, repo, issue):
                 raise OSError("offline")
         reconcile(self.engine(ScriptedWorker([WorkerResult()])), BrokenGitHub(), "owner/repo", 1)
+
+    def test_reconcile_isolates_dispatch_boundary_exception(self):
+        first = self.goal(project="A", chat="Boundary A")
+        second = self.goal(project="B", chat="Boundary B", scope="other")
+        self.registry.upsert_goal(first)
+        self.registry.upsert_goal(second)
+
+        class BoundaryEngine:
+            def __init__(self, registry):
+                self.registry = registry
+                self.calls = []
+
+            def ingest_items(self, items):
+                return []
+
+            def dispatch_goal(self, goal):
+                self.calls.append(goal.project)
+                if goal.project == "A":
+                    raise RuntimeError("dispatch boundary failure")
+                return LifecycleState.RUNNING
+
+        engine = BoundaryEngine(self.registry)
+        github = type("GitHub", (), {"read_master_items": lambda *_: []})()
+        reconcile(engine, github, "owner/repo", 1)
+        self.assertEqual(engine.calls, ["A", "B"])
+        self.assertEqual(self.registry.get(first.key)["state"], "BLOCKED")
+        self.assertIn("ORCHESTRATOR_INTERNAL_ERROR", self.registry.get(first.key)["blockers"])
+        self.assertEqual(self.registry.get(second.key)["state"], "ASSIGNED")
+
+    def test_reconcile_survives_ingest_boundary_failure(self):
+        class BrokenEngine:
+            def __init__(self, registry):
+                self.registry = registry
+
+            def ingest_items(self, items):
+                raise RuntimeError("ingest failed")
+
+        github = type("GitHub", (), {"read_master_items": lambda *_: []})()
+        reconcile(BrokenEngine(self.registry), github, "owner/repo", 1)
 
 
 if __name__ == "__main__":
