@@ -184,6 +184,17 @@ class Harness(unittest.TestCase):
         self.assertEqual(worker.calls, 0)
         self.assertIn("INTEGRATION_CONFLICT", self.registry.get(g2.key)["blockers"])
 
+    def test_blocked_workers_are_dormant_for_dispatch(self):
+        blocked = self.goal(project="Blocked", chat="Dormant")
+        ready = self.goal(project="Ready", chat="Retry", scope="ready")
+        self.registry.upsert_goal(blocked)
+        self.registry.upsert_goal(ready)
+        self.registry.set_state(blocked.key, LifecycleState.BLOCKED, blockers=["retry elsewhere"])
+        self.registry.set_state(ready.key, LifecycleState.READY)
+        keys = {row["worker_key"] for row in self.registry.list_dispatchable()}
+        self.assertNotIn(blocked.key, keys)
+        self.assertIn(ready.key, keys)
+
     def test_restart_recovers_running_worker(self):
         g = self.goal()
         self.registry.upsert_goal(g)
