@@ -46,8 +46,11 @@ class CommandWorkerAdapter:
             "previous": previous,
             "dry_run": dry_run,
             "gated_action_contract": (
-                "Only actions explicitly listed in goal.approved_actions may be performed; "
-                "otherwise return requested_actions without executing them."
+                "Approval gating applies only to privileged/gated actions. "
+                "Read-only inspection is always allowed. Ordinary goal-scoped source, test, "
+                "and documentation work is allowed when dry_run is false. "
+                "A gated action may be performed only when it is explicitly listed in "
+                "goal.approved_actions; otherwise return it in requested_actions."
             ),
         }
         proc = subprocess.run(

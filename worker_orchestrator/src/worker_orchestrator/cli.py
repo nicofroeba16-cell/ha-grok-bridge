@@ -108,7 +108,6 @@ def webhook_server(host: str, port: int, wake: threading.Event, secret: str):
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     registry = Registry(Path(args.db))
-    registry.recover_interrupted()
 
     if args.cmd == "status":
         for row in registry.list_all():
@@ -120,6 +119,8 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(safe, sort_keys=True))
         registry.close()
         return 0
+
+    registry.recover_interrupted()
 
     if not args.worker_command:
         raise SystemExit(

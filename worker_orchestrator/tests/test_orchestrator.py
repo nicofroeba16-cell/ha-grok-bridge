@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from worker_orchestrator.cli import main as cli_main
 from worker_orchestrator.engine import Orchestrator, format_report
 from worker_orchestrator.goals import parse_goal_text
 from worker_orchestrator.models import Goal, LifecycleState, WorkerResult
@@ -192,6 +193,17 @@ class Harness(unittest.TestCase):
         self.assertEqual(self.registry.get(g.key)["state"], "ASSIGNED")
         self.assertEqual(self.registry.get(g.key)["recovery_count"], 1)
 
+    def test_status_is_read_only_and_does_not_recover_running_worker(self):
+        g = self.goal(project="Status", chat="Probe")
+        self.registry.upsert_goal(g)
+        self.registry.set_state(g.key, LifecycleState.RUNNING)
+        self.registry.close()
+        with patch("builtins.print"):
+            self.assertEqual(cli_main(["--db", str(self.db), "status"]), 0)
+        self.registry = Registry(self.db)
+        self.assertEqual(self.registry.get(g.key)["state"], "RUNNING")
+        self.assertEqual(self.registry.get(g.key)["recovery_count"], 0)
+
     def test_exact_head_ci_overrides_worker_claim(self):
         g = self.goal()
         worker = ScriptedWorker([
@@ -295,6 +307,18 @@ class Harness(unittest.TestCase):
         self.assertEqual(result.head, "cafe")
         self.assertEqual(result.progress, "ok")
         self.assertEqual(result.verified_criteria, self.goal().done_criteria)
+
+    def test_worker_contract_allows_read_only_without_approval(self):
+        script = Path(self.tmp.name) / "contract_worker.py"
+        script.write_text(
+            "import json,sys\n"
+            "request=json.load(sys.stdin)\n"
+            "json.dump({'progress':request['gated_action_contract']},sys.stdout)\n"
+        )
+        adapter = CommandWorkerAdapter(f"{sys.executable} {script}")
+        result = adapter.execute(self.goal(), {}, dry_run=True)
+        self.assertIn("Read-only inspection is always allowed", result.progress)
+        self.assertIn("privileged/gated actions", result.progress)
 
 
 if __name__ == "__main__":
