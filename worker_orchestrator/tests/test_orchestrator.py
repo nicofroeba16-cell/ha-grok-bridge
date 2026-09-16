@@ -237,6 +237,22 @@ class Harness(unittest.TestCase):
         self.assertEqual(goal.key, "Projekt: Demo → Chat: Exact Worker")
         self.assertEqual(goal.done_criteria, ("one", "two"))
 
+    def test_goal_parser_accepts_canonical_project_chat_line(self):
+        text = (
+            "Projekt: Demo Project → Chat: Exact Worker\n"
+            "Repository: o/r\n"
+            "Branch: feat/x\n"
+            "Done-Kriterien:\n"
+            "- one\n"
+            "- two\n"
+        )
+        goal = parse_goal_text(text, source_comment_id=5)
+        self.assertIsNotNone(goal)
+        self.assertEqual(goal.key, "Projekt: Demo Project → Chat: Exact Worker")
+        self.assertEqual(goal.repository, "o/r")
+        self.assertEqual(goal.branch, "feat/x")
+        self.assertEqual(goal.done_criteria, ("one", "two"))
+
     def test_duplicate_report_is_suppressed(self):
         g = self.goal()
         worker = ScriptedWorker([
