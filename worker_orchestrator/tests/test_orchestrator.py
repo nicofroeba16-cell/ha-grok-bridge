@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from worker_orchestrator.cli import main as cli_main, make_reporter, reconcile
-from worker_orchestrator.engine import Orchestrator, ReportFormatError, format_report
+from worker_orchestrator.engine import Orchestrator, ReportFormatError, format_report, report_fingerprint
 from worker_orchestrator.goals import parse_goal_text, parse_goals
 from worker_orchestrator.models import Goal, LifecycleState, WorkerResult, normalize_worker_result
 from worker_orchestrator.security import redact_text
@@ -339,6 +339,148 @@ class Harness(unittest.TestCase):
                                reporter=lambda kind, goal, payload: rendered.append(kind))
         self.assertEqual(engine.reconcile_documentation([]), 1)
         self.assertEqual(rendered, ["WORKER_STATUS"])
+
+    def test_master_current_workstream_stale_repairs_workstream_only(self):
+        g = self.goal(workstream_issue=4)
+        self.registry.upsert_goal(g)
+        self.registry.set_state(
+            g.key, LifecycleState.DONE, last_head="head", ci_status="GREEN",
+            verified_criteria=list(g.done_criteria), completion_evidence={"tests": "ok"},
+        )
+        rendered = []
+        engine = Orchestrator(
+            self.registry, ScriptedWorker([]),
+            reporter=lambda kind, goal, payload: rendered.append((kind, payload)),
+        )
+        result = WorkerResult(
+            head="head", ci="GREEN", verified_criteria=g.done_criteria,
+            evidence={"tests": "ok"},
+        )
+        payload = engine._status_payload(g, LifecycleState.DONE, result, [], [])
+        fp = report_fingerprint("WORKER_DONE", payload)
+        self.registry.set_state(g.key, LifecycleState.DONE, last_report_fingerprint=fp)
+        payload["fingerprint"] = fp
+        current = [{"body": format_report("WORKER_DONE", g, payload)}]
+        stale = [{"body": format_report("WORKER_STATUS", g, {
+            "state": "RUNNING", "evidence": {}, "fingerprint": "stale",
+        })}]
+        self.assertEqual(
+            engine.reconcile_documentation(
+                current, {(g.repository, 4): stale}, ("owner/master", 3)
+            ), 1,
+        )
+        self.assertEqual(rendered[0][1]["_destinations"], [[g.repository, 4]])
+        self.assertEqual(engine.worker.calls, 0)
+
+    def test_workstream_current_master_stale_repairs_master_only(self):
+        g = self.goal(workstream_issue=4)
+        self.registry.upsert_goal(g)
+        self.registry.set_state(
+            g.key, LifecycleState.DONE, last_head="head", ci_status="GREEN",
+            verified_criteria=list(g.done_criteria), completion_evidence={"tests": "ok"},
+        )
+        rendered = []
+        engine = Orchestrator(
+            self.registry, ScriptedWorker([]),
+            reporter=lambda kind, goal, payload: rendered.append((kind, payload)),
+        )
+        result = WorkerResult(
+            head="head", ci="GREEN", verified_criteria=g.done_criteria,
+            evidence={"tests": "ok"},
+        )
+        payload = engine._status_payload(g, LifecycleState.DONE, result, [], [])
+        fp = report_fingerprint("WORKER_DONE", payload)
+        self.registry.set_state(g.key, LifecycleState.DONE, last_report_fingerprint=fp)
+        payload["fingerprint"] = fp
+        current = [{"body": format_report("WORKER_DONE", g, payload)}]
+        stale = [{"body": format_report("WORKER_STATUS", g, {
+            "state": "RUNNING", "evidence": {}, "fingerprint": "stale",
+        })}]
+        self.assertEqual(
+            engine.reconcile_documentation(
+                stale, {(g.repository, 4): current}, ("owner/master", 3)
+            ), 1,
+        )
+        self.assertEqual(rendered[0][1]["_destinations"], [["owner/master", 3]])
+        self.assertEqual(engine.worker.calls, 0)
+
+    def test_both_canonical_destinations_current_restart_posts_nothing(self):
+        g = self.goal(workstream_issue=4)
+        self.registry.upsert_goal(g)
+        self.registry.set_state(
+            g.key, LifecycleState.DONE, last_head="head", ci_status="GREEN",
+            verified_criteria=list(g.done_criteria), completion_evidence={"tests": "ok"},
+        )
+        rendered = []
+        engine = Orchestrator(
+            self.registry, ScriptedWorker([]),
+            reporter=lambda kind, goal, payload: rendered.append((kind, payload)),
+        )
+        result = WorkerResult(
+            head="head", ci="GREEN", verified_criteria=g.done_criteria,
+            evidence={"tests": "ok"},
+        )
+        payload = engine._status_payload(g, LifecycleState.DONE, result, [], [])
+        fp = report_fingerprint("WORKER_DONE", payload)
+        self.registry.set_state(g.key, LifecycleState.DONE, last_report_fingerprint=fp)
+        payload["fingerprint"] = fp
+        current = [{"body": format_report("WORKER_DONE", g, payload)}]
+        self.assertEqual(
+            engine.reconcile_documentation(
+                current, {(g.repository, 4): current}, ("owner/master", 3)
+            ), 0,
+        )
+        self.assertEqual(rendered, [])
+        self.assertEqual(engine.worker.calls, 0)
+
+    def test_partial_write_retry_does_not_duplicate_current_destination(self):
+        g = self.goal(workstream_issue=4)
+        calls = []
+        fail_master = {"value": True}
+
+        class GitHub:
+            def post_issue_comment(self, repo, issue, body):
+                calls.append((repo, issue, body))
+                if (repo, issue) == ("owner/master", 3) and fail_master["value"]:
+                    raise OSError("master unavailable")
+
+        worker = ScriptedWorker([WorkerResult(progress="running")])
+        self.registry.upsert_goal(g)
+        engine = Orchestrator(
+            self.registry, worker, reporter=make_reporter(GitHub(), "owner/master", 3)
+        )
+        engine.dispatch_goal(g)
+        self.assertEqual([(r, i) for r, i, _ in calls[:2]], [(g.repository, 4), ("owner/master", 3)])
+        workstream_body = calls[0][2]
+        fail_master["value"] = False
+        before = len([1 for r, i, _ in calls if (r, i) == (g.repository, 4)])
+        self.assertEqual(
+            engine.reconcile_documentation(
+                [], {(g.repository, 4): [{"body": workstream_body}]}, ("owner/master", 3)
+            ), 1,
+        )
+        after = len([1 for r, i, _ in calls if (r, i) == (g.repository, 4)])
+        self.assertEqual(before, after)
+        self.assertEqual([(r, i) for r, i, _ in calls][-1], ("owner/master", 3))
+        self.assertEqual(worker.calls, 1)
+
+    def test_reconcile_reads_workstream_issue_separately(self):
+        g = self.goal(workstream_issue=4)
+        self.registry.upsert_goal(g)
+        worker = ScriptedWorker([WorkerResult(progress="must not run")])
+        engine = self.engine(worker)
+        reads = []
+
+        class GitHub:
+            def read_master_items(self, repo, issue):
+                return []
+            def read_issue_items(self, repo, issue):
+                reads.append((repo, issue))
+                return []
+
+        reconcile(engine, GitHub(), "owner/master", 3)
+        self.assertEqual(reads, [(g.repository, 4)])
+        self.assertEqual(worker.calls, 0)
 
     def test_issue_number_collision_still_writes_distinct_repositories(self):
         g = self.goal(workstream_issue=3)

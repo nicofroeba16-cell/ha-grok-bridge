@@ -39,6 +39,7 @@ class Orchestrator:
         self.stalled_threshold = max(2, stalled_threshold)
         self.ci_verifier = ci_verifier
         self.allowed_repositories = set(DEFAULT_ALLOWED_REPOSITORIES if allowed_repositories is None else allowed_repositories)
+        self.documentation_reconciled_keys: set[str] = set()
 
     def ingest_items(self, items: list[dict]) -> list[Goal]:
         accepted: list[Goal] = []
@@ -340,8 +341,16 @@ class Orchestrator:
             if current is not None:
                 blockers = json.loads(current["blockers"] or "[]")
                 blockers = list(dict.fromkeys([*blockers, "DOCUMENTATION_DRIFT"]))
-                self.registry.set_state(goal.key, LifecycleState.BLOCKED, blockers=blockers,
-                                        last_progress="Canonical documentation destinations diverged; retry reconciliation.")
+            self.registry.set_state(
+                goal.key, LifecycleState.BLOCKED, blockers=blockers,
+                last_progress="Canonical documentation destinations diverged; retry reconciliation.",
+                session_state={
+                    "documentation_pending": {
+                        "kind": kind, "payload": safe_payload,
+                        "state": str(payload.get("state", LifecycleState.BLOCKED)),
+                    }
+                },
+            )
             return
         except Exception as exc:
             # Non-destination reporter errors remain retryable without changing
@@ -351,23 +360,45 @@ class Orchestrator:
             return
         if row is not None:
             try:
+                pending = json.loads(row["session_state"] or "{}").get("documentation_pending")
                 self.registry.set_state(
                     goal.key,
-                    LifecycleState(row["state"]),
+                    LifecycleState(pending["state"]) if pending else LifecycleState(row["state"]),
                     last_report_fingerprint=fingerprint,
+                    session_state={} if pending else json.loads(row["session_state"] or "{}"),
                 )
             except Exception as exc:
                 self._record_report_failure(goal, "REPORT_WRITE_FAILED", exc)
 
-    def reconcile_documentation(self, items: list[dict]) -> int:
+    def reconcile_documentation(
+        self, master_items: list[dict], destinations: dict | None = None,
+        master_destination: tuple[str, int] | None = None,
+    ) -> int:
         """Repair missing/stale canonical statuses without executing workers."""
-        statuses = parse_canonical_statuses(items)
+        master_statuses = parse_canonical_statuses(master_items)
+        destinations = destinations or {}
+        self.documentation_reconciled_keys.clear()
         repaired = 0
         for row in self.registry.list_all():
-            status = statuses.get(row["worker_key"])
-            expected = row["state"]
-            actual = status.get("STATE") if status else None
-            if status and actual == expected:
+            workstream_key = (row["repository"], row["workstream_issue"])
+            if workstream_key == master_destination:
+                workstream_statuses = master_statuses
+            else:
+                workstream_statuses = parse_canonical_statuses(
+                    destinations.get(workstream_key, master_items) if destinations else master_items
+                )
+            pending = json.loads(row["session_state"] or "{}").get("documentation_pending")
+            desired_kind = pending.get("kind") if pending else ("WORKER_DONE" if row["state"] == LifecycleState.DONE else "WORKER_STATUS")
+            desired_payload = pending.get("payload") if pending else None
+            expected = desired_payload.get("state") if desired_payload else row["state"]
+            expected = str(expected)
+            master_status = master_statuses.get(row["worker_key"])
+            workstream_status = workstream_statuses.get(row["worker_key"])
+            expected_fp = (report_fingerprint(desired_kind, desired_payload)
+                           if desired_payload else row["last_report_fingerprint"])
+            master_current = bool(master_status and master_status.get("FINGERPRINT") == expected_fp) if expected_fp else bool(master_status and master_status.get("STATE") == expected)
+            workstream_current = bool(workstream_status and workstream_status.get("FINGERPRINT") == expected_fp) if expected_fp else bool(workstream_status and workstream_status.get("STATE") == expected)
+            if master_current and (not row["workstream_issue"] or workstream_current):
                 continue
             goal = Goal(
                 project=row["project"], chat=row["chat"], repository=row["repository"],
@@ -385,13 +416,24 @@ class Orchestrator:
                 evidence=json.loads(row["completion_evidence"] or "{}"),
                 progress=row["last_progress"],
             )
-            kind = "WORKER_DONE" if expected == LifecycleState.DONE else "WORKER_STATUS"
-            payload = self._status_payload(goal, LifecycleState(expected), result,
-                                           list(result.blockers),
-                                           list(json.loads(row["user_gate"] or "[]")))
-            if status and status.get("FINGERPRINT") == report_fingerprint(kind, payload):
-                continue
+            kind = desired_kind
+            payload = desired_payload or self._status_payload(goal, LifecycleState(expected), result,
+                                                               list(result.blockers),
+                                                               list(json.loads(row["user_gate"] or "[]")))
+            missing = []
+            if not workstream_current and row["workstream_issue"] and workstream_key != master_destination:
+                missing.append(workstream_key)
+            if not master_current:
+                if master_destination:
+                    missing.append(master_destination)
+            missing = [x for x in missing if x]
+            payload["_destinations"] = missing or None
             payload["_force_report"] = True
+            # Dual-destination workers must not be executed in the same poll
+            # that repaired their canonical documentation. Legacy Master-only
+            # workers retain their established dispatch behavior.
+            if row["workstream_issue"]:
+                self.documentation_reconciled_keys.add(row["worker_key"])
             self._report(kind, goal, payload)
             repaired += 1
         return repaired
@@ -470,7 +512,7 @@ def report_fingerprint(kind: str, payload: dict) -> str:
     safe_payload = sanitize(payload)
     fingerprint_payload = {
         key: value for key, value in safe_payload.items()
-        if key not in {"timestamp", "supersedes", "fingerprint", "_force_report"}
+        if key not in {"timestamp", "supersedes", "fingerprint", "_force_report", "_destinations"}
     }
     return sha256(
         json.dumps({"kind": kind, "payload": fingerprint_payload}, sort_keys=True, default=str).encode()
