@@ -101,9 +101,18 @@ class Registry:
 
     def upsert_goal(self, goal: Goal):
         current = self.get(goal.key)
-        is_new_version = current is None or current["goal_hash"] != goal.hash
-        if not is_new_version:
-            return False, current
+        if current is not None:
+            current_source = current["source_comment_id"]
+            incoming_source = goal.source_comment_id
+            if current_source is not None and incoming_source is None:
+                return False, current
+            if current_source is not None and incoming_source is not None and incoming_source < current_source:
+                return False, current
+            if current_source is not None and incoming_source is not None and incoming_source == current_source:
+                return False, current
+            if current["goal_hash"] == goal.hash:
+                return False, current
+        is_new_version = True
         with self.tx() as c:
             c.execute("""
                 INSERT INTO workers(

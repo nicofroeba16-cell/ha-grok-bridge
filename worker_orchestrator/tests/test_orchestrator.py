@@ -4,13 +4,15 @@ import json
 import os
 import sys
 import tempfile
+import subprocess
+from hashlib import sha256
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from worker_orchestrator.cli import main as cli_main
 from worker_orchestrator.engine import Orchestrator, format_report
-from worker_orchestrator.goals import parse_goal_text
+from worker_orchestrator.goals import parse_goal_text, parse_goals
 from worker_orchestrator.models import Goal, LifecycleState, WorkerResult
 from worker_orchestrator.security import redact_text
 from worker_orchestrator.store import Registry
@@ -319,6 +321,71 @@ class Harness(unittest.TestCase):
         result = adapter.execute(self.goal(), {}, dry_run=True)
         self.assertIn("Read-only inspection is always allowed", result.progress)
         self.assertIn("privileged/gated actions", result.progress)
+
+
+    def assignment(self, version, body_suffix="", source=1, chat="Latest Worker"):
+        text = (f"PROJECT: Worker Orchestrator\nCHAT: {chat}\nREPOSITORY: nicofroeba16-cell/ha-grok-bridge\n"
+                f"BRANCH: fix/runtime\nGOAL_VERSION: {version}\nDONE_CRITERIA:\n- read README\n{body_suffix}")
+        return {"id": source, "body": text}
+
+    def test_latest_goal_wins_and_stays_winner_next_poll(self):
+        goals = parse_goals([self.assignment("v1", source=10), self.assignment("v2", source=20)])
+        self.assertEqual(len(goals), 1)
+        self.assertEqual(goals[0].version, "v2")
+        worker = ScriptedWorker([WorkerResult()])
+        engine = self.engine(worker)
+        engine.ingest_items([self.assignment("v1", source=10), self.assignment("v2", source=20)])
+        row = self.registry.get(goals[0].key)
+        self.assertEqual(row["goal_version"], "v2")
+        engine.ingest_items([self.assignment("v1", source=10)])
+        self.assertEqual(self.registry.get(goals[0].key)["goal_version"], "v2")
+
+    def test_same_version_new_hash_newer_source_reactivates_once(self):
+        g1 = parse_goal_text(self.assignment("same", source=10)["body"], source_comment_id=10)
+        g2 = parse_goal_text(self.assignment("same", "NOTE: changed\n", 20)["body"], source_comment_id=20)
+        self.assertTrue(self.registry.upsert_goal(g1)[0])
+        self.registry.set_state(g1.key, LifecycleState.DONE)
+        self.assertTrue(self.registry.upsert_goal(g2)[0])
+        self.assertEqual(self.registry.get(g1.key)["state"], "ASSIGNED")
+        self.assertFalse(self.registry.upsert_goal(g2)[0])
+        self.assertFalse(self.registry.upsert_goal(g1)[0])
+
+    def test_reports_are_not_goals(self):
+        base = "\nPROJECT: Worker Orchestrator\nCHAT: Report Worker\nREPOSITORY: nicofroeba16-cell/ha-grok-bridge\nBRANCH: fix/x\nGOAL_VERSION: v1\nDONE_CRITERIA:\n- x\n"
+        for marker in ("WORKER_STATUS", "WORKER_DONE", "WORKER_STALLED", "INTEGRATION_CONFLICT"):
+            self.assertIsNone(parse_goal_text(marker + base, source_comment_id=99), marker)
+
+    def test_base_branch_guard(self):
+        g = self.goal(branch="main")
+        worker = ScriptedWorker([WorkerResult()])
+        self.registry.upsert_goal(g)
+        self.assertEqual(self.engine(worker).dispatch_goal(g), LifecycleState.BLOCKED)
+        self.assertEqual(worker.calls, 0)
+        self.assertIn("BASE_BRANCH_GUARD", self.registry.get(g.key)["blockers"])
+
+    def test_done_and_waiting_remain_dormant_after_recovery(self):
+        for state, chat in ((LifecycleState.DONE, "Done"), (LifecycleState.WAITING_FOR_USER, "Wait")):
+            g = self.goal(chat=chat)
+            self.registry.upsert_goal(g)
+            self.registry.set_state(g.key, state)
+        self.assertEqual(self.registry.recover_interrupted(), [])
+        self.assertEqual(self.registry.get(self.goal(chat="Done").key)["state"], "DONE")
+        self.assertEqual(self.registry.get(self.goal(chat="Wait").key)["state"], "WAITING_FOR_USER")
+
+
+    def test_dirty_workspace_is_preserved_and_blocks_execution(self):
+        g = self.goal(branch="fix/runtime")
+        root = Path(self.tmp.name) / "workspaces"
+        ws = root / sha256(g.key.encode()).hexdigest()[:16]
+        ws.mkdir(parents=True)
+        subprocess.run(["git", "init", "-b", g.branch], cwd=ws, check=True, capture_output=True)
+        subprocess.run(["git", "remote", "add", "origin", f"https://github.com/{g.repository}.git"], cwd=ws, check=True)
+        marker = ws / "local-work.txt"
+        marker.write_text("keep me")
+        adapter = CommandWorkerAdapter("echo", workspace_root=root)
+        result = adapter.execute(g, {}, dry_run=False)
+        self.assertEqual(result.error, "WORKSPACE_DIRTY")
+        self.assertEqual(marker.read_text(), "keep me")
 
 
 if __name__ == "__main__":

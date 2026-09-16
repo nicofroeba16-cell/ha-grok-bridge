@@ -141,7 +141,11 @@ def main(argv: list[str] | None = None) -> int:
 
     engine = Orchestrator(
         registry,
-        CommandWorkerAdapter(args.worker_command, env_allowlist=worker_env),
+        CommandWorkerAdapter(
+            args.worker_command,
+            env_allowlist=worker_env,
+            workspace_root=os.environ.get("WORKSPACE_ROOT", "/home/vboxuser/.local/share/worker-orchestrator/workspaces"),
+        ),
         reporter=make_reporter(gh, args.master_repo, args.master_issue),
         dry_run=not args.allow_non_dry_run,
         ci_verifier=gh.exact_head_ci,

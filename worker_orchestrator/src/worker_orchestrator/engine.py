@@ -77,6 +77,12 @@ class Orchestrator:
         if row["state"] in (LifecycleState.DONE, LifecycleState.WAITING_FOR_USER, LifecycleState.STALLED):
             return LifecycleState(row["state"])
 
+        if goal.branch.lower() in {"main", "master"} and not ({"merge", "runtime_mutation"} & {x.lower() for x in goal.approved_actions}):
+            blockers = ["BASE_BRANCH_GUARD"]
+            self.registry.set_state(goal.key, LifecycleState.BLOCKED, blockers=blockers, last_progress="Direct base-branch work rejected.")
+            self._report("WORKER_STATUS", goal, {"state": LifecycleState.BLOCKED, "blockers": blockers, "next": "assign a workstream branch"})
+            return LifecycleState.BLOCKED
+
         locked, owner = self.registry.try_acquire_lock(
             goal.key, goal.repository, goal.branch, goal.files, goal.scope
         )
