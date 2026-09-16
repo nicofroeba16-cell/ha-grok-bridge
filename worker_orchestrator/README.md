@@ -93,6 +93,28 @@ Binding the webhook listener outside loopback requires a configured webhook sign
 
 SIGINT or SIGTERM cleanly stops the daemon. The SQLite database is the recovery source on the next start.
 
+## Documentation Freshness Contract v1
+
+Every material lifecycle transition is published exactly once to the workstream
+issue (when configured) and Master Issue #3. A deterministic fingerprint covers
+the semantic status payload; timestamps and `SUPERSEDES` metadata do not change
+that fingerprint, so restart/poll no-ops do not create status spam. Reports also
+carry UTC `TIMESTAMP`, `EVIDENCE`, and `SUPERSEDES` fields.
+
+At startup and before each poll's new assignment ingestion, persisted workers
+are compared with canonical status comments already read from Master. Missing
+or stale status is re-published without executing the worker. If either issue
+write fails after the other succeeds, the worker is persisted as
+`BLOCKED` with `DOCUMENTATION_DRIFT`; its report fingerprint is not advanced,
+so the next reconciliation retries and converges safely. The daemon continues
+serving other workers while this retry remains pending.
+
 ## Least privilege
 
 Use repository-scoped credentials with only the read/write permissions needed for issue status reporting and repository/CI inspection. Keep worker credentials separate from orchestrator credentials. Never place credential values in assignments, logs, issues or committed configuration.
+
+## Runtime hardening
+
+Master ingestion is latest-assignment-wins per exact `Projekt → Chat` worker key. GitHub source comment IDs are the monotonic authority; older assignments cannot supersede a newer persisted source, even across later polls or restarts. Orchestrator reports (`WORKER_STATUS`, `WORKER_DONE`, `WORKER_STALLED`, `INTEGRATION_CONFLICT`) are rejected as assignments.
+
+Daemon execution uses isolated per-worker workspaces under `WORKSPACE_ROOT` (default `/home/vboxuser/.local/share/worker-orchestrator/workspaces`). Existing workspaces must match the assigned repository origin and exact branch and must be clean; mismatches or dirty work fail closed without reset or cleanup. Direct `main`/`master` work is blocked unless the current Goal explicitly approves a privileged base-branch action.

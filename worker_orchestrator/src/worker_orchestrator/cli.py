@@ -10,9 +10,9 @@ from hashlib import sha256
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from .engine import Orchestrator, format_report
+from .engine import DocumentationDriftError, Orchestrator, format_report
 from .github_client import GitHubClient
-from .models import Goal
+from .models import DEFAULT_ALLOWED_REPOSITORIES, Goal, LifecycleState
 from .store import Registry
 from .worker import CommandWorkerAdapter
 
@@ -23,6 +23,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--master-repo", default=os.environ.get("MASTER_REPO", "nicofroeba16-cell/ha-grok-bridge"))
     parser.add_argument("--master-issue", type=int, default=int(os.environ.get("MASTER_ISSUE", "3")))
     parser.add_argument("--worker-command", default=os.environ.get("WORKER_COMMAND", ""))
+    parser.add_argument("--workspace-root", default=os.environ.get("WORKSPACE_ROOT", "/home/vboxuser/.local/share/worker-orchestrator/workspaces"))
     parser.add_argument("--poll-seconds", type=int, default=int(os.environ.get("RECONCILE_SECONDS", "300")))
     parser.add_argument(
         "--allow-non-dry-run",
@@ -59,17 +60,58 @@ def make_reporter(gh: GitHubClient, master_repo: str, master_issue: int):
     def report(kind: str, goal: Goal, payload: dict) -> None:
         body = format_report(kind, goal, payload)
         target_issue = goal.workstream_issue or master_issue
-        if target_issue != master_issue:
-            gh.post_issue_comment(goal.repository, target_issue, body)
-        gh.post_issue_comment(master_repo, master_issue, body)
+        destinations = payload.get("_destinations")
+        if destinations is None:
+            destinations = list(dict.fromkeys(
+                [(goal.repository, target_issue), (master_repo, master_issue)]
+            ))
+        try:
+            for repo, issue in destinations:
+                gh.post_issue_comment(repo, issue, body)
+        except Exception as exc:
+            raise DocumentationDriftError(str(exc)) from exc
 
     return report
 
 
 def reconcile(engine: Orchestrator, gh: GitHubClient, master_repo: str, master_issue: int) -> None:
-    engine.ingest_items(gh.read_master_items(master_repo, master_issue))
-    for row in engine.registry.list_dispatchable():
-        engine.dispatch_goal(_goal_from_row(row))
+    try:
+        items = gh.read_master_items(master_repo, master_issue)
+        # Reconcile persisted workers before ingesting a newly assigned goal;
+        # otherwise a just-ingested goal would be posted twice in one poll
+        # because its new comment is not part of the already-read snapshot.
+        if hasattr(engine, "reconcile_documentation"):
+            destinations = {}
+            read_issue = getattr(gh, "read_issue_items", gh.read_master_items)
+            for row in engine.registry.list_all():
+                target = (row["repository"], row["workstream_issue"])
+                if row["workstream_issue"] and target != (master_repo, master_issue):
+                    if target not in destinations:
+                        destinations[target] = read_issue(*target)
+            engine.reconcile_documentation(items, destinations, (master_repo, master_issue))
+        engine.ingest_items(items)
+        rows = [row for row in engine.registry.list_dispatchable()
+                if row["worker_key"] not in getattr(engine, "documentation_reconciled_keys", set())]
+    except Exception:
+        # A failed poll must not take down the long-running daemon.
+        return
+    for row in rows:
+        try:
+            engine.dispatch_goal(_goal_from_row(row))
+        except Exception as exc:
+            # Isolate one broken assignment from the remaining workers.
+            try:
+                goal = _goal_from_row(row)
+                engine.registry.set_state(
+                    goal.key, LifecycleState.BLOCKED,
+                    blockers=["ORCHESTRATOR_INTERNAL_ERROR"],
+                    last_progress="ORCHESTRATOR_INTERNAL_ERROR",
+                )
+                engine.registry.record_event(
+                    goal.key, goal.version, "ORCHESTRATOR_INTERNAL_ERROR", {"reason": str(exc)[:240]}
+                )
+            except Exception:
+                pass
 
 
 def webhook_server(host: str, port: int, wake: threading.Event, secret: str):
@@ -108,7 +150,6 @@ def webhook_server(host: str, port: int, wake: threading.Event, secret: str):
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     registry = Registry(Path(args.db))
-    registry.recover_interrupted()
 
     if args.cmd == "status":
         for row in registry.list_all():
@@ -120,6 +161,8 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(safe, sort_keys=True))
         registry.close()
         return 0
+
+    registry.recover_interrupted()
 
     if not args.worker_command:
         raise SystemExit(
@@ -136,11 +179,15 @@ def main(argv: list[str] | None = None) -> int:
     allowed_repos_env = os.environ.get("ALLOWED_REPOSITORIES", "")
     allowed_repos = {
         x.strip() for x in allowed_repos_env.split(",") if x.strip()
-    } or {args.master_repo}
+    } or set(DEFAULT_ALLOWED_REPOSITORIES)
 
     engine = Orchestrator(
         registry,
-        CommandWorkerAdapter(args.worker_command, env_allowlist=worker_env),
+        CommandWorkerAdapter(
+            args.worker_command,
+            env_allowlist=worker_env,
+            workspace_root=args.workspace_root,
+        ),
         reporter=make_reporter(gh, args.master_repo, args.master_issue),
         dry_run=not args.allow_non_dry_run,
         ci_verifier=gh.exact_head_ci,

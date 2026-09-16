@@ -7,6 +7,7 @@ from .models import Goal
 
 
 FIELD = re.compile(r"^\s*([A-Za-zÄÖÜäöü_ -]{2,40})\s*:\s*(.*?)\s*$")
+REPORT_MARKERS = {"WORKER_STATUS", "WORKER_DONE", "WORKER_STALLED", "INTEGRATION_CONFLICT"}
 
 
 def _canonical_identifier(text: str) -> tuple[str, str]:
@@ -52,6 +53,9 @@ def _criteria(lines: list[str]) -> tuple[str, ...]:
 
 def parse_goal_text(text: str, *, source_comment_id: int | None = None) -> Goal | None:
     lines = text.splitlines()
+    normalized_lines = {line.replace("**", "").strip().upper() for line in lines}
+    if normalized_lines.intersection(REPORT_MARKERS):
+        return None
     fields: dict[str, str] = {}
     for line in lines:
         match = FIELD.match(line)
@@ -64,7 +68,8 @@ def parse_goal_text(text: str, *, source_comment_id: int | None = None) -> Goal 
     repository = fields.get("REPOSITORY") or fields.get("REPO") or ""
     branch = fields.get("BRANCH", "")
     done = _criteria(lines)
-    if not project or not chat or not done:
+    assignment_marker = bool(fields.get("GOAL_VERSION") or fields.get("GOAL_VERSION_HASH")) or any("GOAL PROMPT" in x.upper() for x in lines) or bool(repository and branch)
+    if not assignment_marker or not project or not chat or not done:
         return None
 
     issue_raw = fields.get("WORKSTREAM_ISSUE") or fields.get("ISSUE")
@@ -91,9 +96,14 @@ def parse_goal_text(text: str, *, source_comment_id: int | None = None) -> Goal 
 
 
 def parse_goals(items: Iterable[dict]) -> list[Goal]:
-    goals: list[Goal] = []
-    for item in items:
+    """Return only the newest assignment per worker key for this reconciliation."""
+    newest: dict[str, tuple[int, int, Goal]] = {}
+    for order, item in enumerate(items):
         goal = parse_goal_text(item.get("body") or "", source_comment_id=item.get("id"))
-        if goal:
-            goals.append(goal)
-    return goals
+        if not goal:
+            continue
+        source = goal.source_comment_id if goal.source_comment_id is not None else order
+        current = newest.get(goal.key)
+        if current is None or (source, order) > (current[0], current[1]):
+            newest[goal.key] = (source, order, goal)
+    return [entry[2] for entry in sorted(newest.values(), key=lambda x: (x[0], x[1]))]

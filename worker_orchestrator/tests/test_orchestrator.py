@@ -4,13 +4,16 @@ import json
 import os
 import sys
 import tempfile
+import subprocess
+from hashlib import sha256
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from worker_orchestrator.engine import Orchestrator, format_report
-from worker_orchestrator.goals import parse_goal_text
-from worker_orchestrator.models import Goal, LifecycleState, WorkerResult
+from worker_orchestrator.cli import main as cli_main, make_reporter, reconcile
+from worker_orchestrator.engine import Orchestrator, ReportFormatError, format_report, report_fingerprint
+from worker_orchestrator.goals import parse_goal_text, parse_goals
+from worker_orchestrator.models import Goal, LifecycleState, WorkerResult, normalize_worker_result
 from worker_orchestrator.security import redact_text
 from worker_orchestrator.store import Registry
 from worker_orchestrator.worker import CommandWorkerAdapter
@@ -181,6 +184,17 @@ class Harness(unittest.TestCase):
         self.assertEqual(worker.calls, 0)
         self.assertIn("INTEGRATION_CONFLICT", self.registry.get(g2.key)["blockers"])
 
+    def test_blocked_workers_are_dormant_for_dispatch(self):
+        blocked = self.goal(project="Blocked", chat="Dormant")
+        ready = self.goal(project="Ready", chat="Retry", scope="ready")
+        self.registry.upsert_goal(blocked)
+        self.registry.upsert_goal(ready)
+        self.registry.set_state(blocked.key, LifecycleState.BLOCKED, blockers=["retry elsewhere"])
+        self.registry.set_state(ready.key, LifecycleState.READY)
+        keys = {row["worker_key"] for row in self.registry.list_dispatchable()}
+        self.assertNotIn(blocked.key, keys)
+        self.assertIn(ready.key, keys)
+
     def test_restart_recovers_running_worker(self):
         g = self.goal()
         self.registry.upsert_goal(g)
@@ -191,6 +205,17 @@ class Harness(unittest.TestCase):
         self.assertEqual(recovered, [g.key])
         self.assertEqual(self.registry.get(g.key)["state"], "ASSIGNED")
         self.assertEqual(self.registry.get(g.key)["recovery_count"], 1)
+
+    def test_status_is_read_only_and_does_not_recover_running_worker(self):
+        g = self.goal(project="Status", chat="Probe")
+        self.registry.upsert_goal(g)
+        self.registry.set_state(g.key, LifecycleState.RUNNING)
+        self.registry.close()
+        with patch("builtins.print"):
+            self.assertEqual(cli_main(["--db", str(self.db), "status"]), 0)
+        self.registry = Registry(self.db)
+        self.assertEqual(self.registry.get(g.key)["state"], "RUNNING")
+        self.assertEqual(self.registry.get(g.key)["recovery_count"], 0)
 
     def test_exact_head_ci_overrides_worker_claim(self):
         g = self.goal()
@@ -265,6 +290,216 @@ class Harness(unittest.TestCase):
         engine.dispatch_goal(g)
         self.assertEqual(len(self.reports), first)
 
+    def test_canonical_transition_writes_both_destinations_once(self):
+        g = self.goal(workstream_issue=4)
+        calls = []
+        gh = type("GitHub", (), {"post_issue_comment": lambda _, repo, issue, body: calls.append((repo, issue, body))})()
+        reporter = make_reporter(gh, "owner/master", 3)
+        reporter("WORKER_STATUS", g, {"state": "RUNNING", "evidence": {}})
+        self.assertEqual([(call[0], call[1]) for call in calls],
+                         [(g.repository, 4), ("owner/master", 3)])
+
+    def test_partial_canonical_write_blocks_with_documentation_drift(self):
+        g = self.goal(workstream_issue=4)
+        calls = []
+        def post(_, repo, issue, body):
+            calls.append((repo, issue))
+            if issue == 3:
+                raise OSError("master unavailable")
+        gh = type("GitHub", (), {"post_issue_comment": post})()
+        self.registry.upsert_goal(g)
+        engine = Orchestrator(self.registry, ScriptedWorker([WorkerResult(progress="x")]),
+                              reporter=make_reporter(gh, "owner/master", 3))
+        self.assertEqual(engine.dispatch_goal(g), LifecycleState.BLOCKED)
+        self.assertIn("DOCUMENTATION_DRIFT", json.loads(self.registry.get(g.key)["blockers"]))
+        self.assertEqual(calls, [(g.repository, 4), ("owner/master", 3)])
+
+    def test_restart_reconciles_stale_canonical_status_without_worker_execution(self):
+        g = self.goal(workstream_issue=4)
+        self.registry.upsert_goal(g)
+        self.registry.set_state(g.key, LifecycleState.DONE, last_head="head", ci_status="GREEN",
+                                verified_criteria=list(g.done_criteria), completion_evidence={"tests": "ok"})
+        rendered = []
+        engine = Orchestrator(self.registry, ScriptedWorker([]),
+                               reporter=lambda kind, goal, payload: rendered.append((kind, payload)))
+        stale = [{"body": format_report("WORKER_STATUS", g, {"state": "RUNNING", "evidence": {}})}]
+        self.assertEqual(engine.reconcile_documentation(stale), 1)
+        self.assertEqual(len(rendered), 1)
+        self.assertEqual(rendered[0][0], "WORKER_DONE")
+        self.assertEqual(engine.worker.calls, 0)
+
+    def test_restart_with_current_fingerprint_does_not_republish(self):
+        g = self.goal(workstream_issue=4)
+        self.registry.upsert_goal(g)
+        worker = ScriptedWorker([WorkerResult(head="head", ci="GREEN", progress="done")])
+        rendered = []
+        engine = Orchestrator(self.registry, worker,
+                              reporter=lambda kind, goal, payload: rendered.append(
+                                  format_report(kind, goal, payload)))
+        engine.dispatch_goal(g)
+        current = [{"body": rendered[-1]}]
+        self.assertEqual(engine.reconcile_documentation(current), 0)
+        self.assertEqual(len(rendered), 1)
+        self.assertEqual(worker.calls, 1)
+
+    def test_missing_canonical_status_is_reconciled(self):
+        g = self.goal()
+        self.registry.upsert_goal(g)
+        rendered = []
+        engine = Orchestrator(self.registry, ScriptedWorker([]),
+                               reporter=lambda kind, goal, payload: rendered.append(kind))
+        self.assertEqual(engine.reconcile_documentation([]), 1)
+        self.assertEqual(rendered, ["WORKER_STATUS"])
+
+    def test_master_current_workstream_stale_repairs_workstream_only(self):
+        g = self.goal(workstream_issue=4)
+        self.registry.upsert_goal(g)
+        self.registry.set_state(
+            g.key, LifecycleState.DONE, last_head="head", ci_status="GREEN",
+            verified_criteria=list(g.done_criteria), completion_evidence={"tests": "ok"},
+        )
+        rendered = []
+        engine = Orchestrator(
+            self.registry, ScriptedWorker([]),
+            reporter=lambda kind, goal, payload: rendered.append((kind, payload)),
+        )
+        result = WorkerResult(
+            head="head", ci="GREEN", verified_criteria=g.done_criteria,
+            evidence={"tests": "ok"},
+        )
+        payload = engine._status_payload(g, LifecycleState.DONE, result, [], [])
+        fp = report_fingerprint("WORKER_DONE", payload)
+        self.registry.set_state(g.key, LifecycleState.DONE, last_report_fingerprint=fp)
+        payload["fingerprint"] = fp
+        current = [{"body": format_report("WORKER_DONE", g, payload)}]
+        stale = [{"body": format_report("WORKER_STATUS", g, {
+            "state": "RUNNING", "evidence": {}, "fingerprint": "stale",
+        })}]
+        self.assertEqual(
+            engine.reconcile_documentation(
+                current, {(g.repository, 4): stale}, ("owner/master", 3)
+            ), 1,
+        )
+        self.assertEqual(rendered[0][1]["_destinations"], [[g.repository, 4]])
+        self.assertEqual(engine.worker.calls, 0)
+
+    def test_workstream_current_master_stale_repairs_master_only(self):
+        g = self.goal(workstream_issue=4)
+        self.registry.upsert_goal(g)
+        self.registry.set_state(
+            g.key, LifecycleState.DONE, last_head="head", ci_status="GREEN",
+            verified_criteria=list(g.done_criteria), completion_evidence={"tests": "ok"},
+        )
+        rendered = []
+        engine = Orchestrator(
+            self.registry, ScriptedWorker([]),
+            reporter=lambda kind, goal, payload: rendered.append((kind, payload)),
+        )
+        result = WorkerResult(
+            head="head", ci="GREEN", verified_criteria=g.done_criteria,
+            evidence={"tests": "ok"},
+        )
+        payload = engine._status_payload(g, LifecycleState.DONE, result, [], [])
+        fp = report_fingerprint("WORKER_DONE", payload)
+        self.registry.set_state(g.key, LifecycleState.DONE, last_report_fingerprint=fp)
+        payload["fingerprint"] = fp
+        current = [{"body": format_report("WORKER_DONE", g, payload)}]
+        stale = [{"body": format_report("WORKER_STATUS", g, {
+            "state": "RUNNING", "evidence": {}, "fingerprint": "stale",
+        })}]
+        self.assertEqual(
+            engine.reconcile_documentation(
+                stale, {(g.repository, 4): current}, ("owner/master", 3)
+            ), 1,
+        )
+        self.assertEqual(rendered[0][1]["_destinations"], [["owner/master", 3]])
+        self.assertEqual(engine.worker.calls, 0)
+
+    def test_both_canonical_destinations_current_restart_posts_nothing(self):
+        g = self.goal(workstream_issue=4)
+        self.registry.upsert_goal(g)
+        self.registry.set_state(
+            g.key, LifecycleState.DONE, last_head="head", ci_status="GREEN",
+            verified_criteria=list(g.done_criteria), completion_evidence={"tests": "ok"},
+        )
+        rendered = []
+        engine = Orchestrator(
+            self.registry, ScriptedWorker([]),
+            reporter=lambda kind, goal, payload: rendered.append((kind, payload)),
+        )
+        result = WorkerResult(
+            head="head", ci="GREEN", verified_criteria=g.done_criteria,
+            evidence={"tests": "ok"},
+        )
+        payload = engine._status_payload(g, LifecycleState.DONE, result, [], [])
+        fp = report_fingerprint("WORKER_DONE", payload)
+        self.registry.set_state(g.key, LifecycleState.DONE, last_report_fingerprint=fp)
+        payload["fingerprint"] = fp
+        current = [{"body": format_report("WORKER_DONE", g, payload)}]
+        self.assertEqual(
+            engine.reconcile_documentation(
+                current, {(g.repository, 4): current}, ("owner/master", 3)
+            ), 0,
+        )
+        self.assertEqual(rendered, [])
+        self.assertEqual(engine.worker.calls, 0)
+
+    def test_partial_write_retry_does_not_duplicate_current_destination(self):
+        g = self.goal(workstream_issue=4)
+        calls = []
+        fail_master = {"value": True}
+
+        class GitHub:
+            def post_issue_comment(self, repo, issue, body):
+                calls.append((repo, issue, body))
+                if (repo, issue) == ("owner/master", 3) and fail_master["value"]:
+                    raise OSError("master unavailable")
+
+        worker = ScriptedWorker([WorkerResult(progress="running")])
+        self.registry.upsert_goal(g)
+        engine = Orchestrator(
+            self.registry, worker, reporter=make_reporter(GitHub(), "owner/master", 3)
+        )
+        engine.dispatch_goal(g)
+        self.assertEqual([(r, i) for r, i, _ in calls[:2]], [(g.repository, 4), ("owner/master", 3)])
+        workstream_body = calls[0][2]
+        fail_master["value"] = False
+        before = len([1 for r, i, _ in calls if (r, i) == (g.repository, 4)])
+        self.assertEqual(
+            engine.reconcile_documentation(
+                [], {(g.repository, 4): [{"body": workstream_body}]}, ("owner/master", 3)
+            ), 1,
+        )
+        after = len([1 for r, i, _ in calls if (r, i) == (g.repository, 4)])
+        self.assertEqual(before, after)
+        self.assertEqual([(r, i) for r, i, _ in calls][-1], ("owner/master", 3))
+        self.assertEqual(worker.calls, 1)
+
+    def test_reconcile_reads_workstream_issue_separately(self):
+        g = self.goal(workstream_issue=4)
+        self.registry.upsert_goal(g)
+        worker = ScriptedWorker([WorkerResult(progress="must not run")])
+        engine = self.engine(worker)
+        reads = []
+
+        class GitHub:
+            def read_master_items(self, repo, issue):
+                return []
+            def read_issue_items(self, repo, issue):
+                reads.append((repo, issue))
+                return []
+
+        reconcile(engine, GitHub(), "owner/master", 3)
+        self.assertEqual(reads, [(g.repository, 4)])
+        self.assertEqual(worker.calls, 0)
+
+    def test_issue_number_collision_still_writes_distinct_repositories(self):
+        g = self.goal(workstream_issue=3)
+        calls = []
+        gh = type("GitHub", (), {"post_issue_comment": lambda _, repo, issue, body: calls.append((repo, issue))})()
+        make_reporter(gh, "owner/master", 3)("WORKER_STATUS", g, {"state": "RUNNING", "evidence": {}})
+        self.assertEqual(calls, [(g.repository, 3), ("owner/master", 3)])
+
     def test_secret_redaction_and_worker_environment_isolation(self):
         with patch.dict(
             os.environ,
@@ -295,6 +530,332 @@ class Harness(unittest.TestCase):
         self.assertEqual(result.head, "cafe")
         self.assertEqual(result.progress, "ok")
         self.assertEqual(result.verified_criteria, self.goal().done_criteria)
+
+    def test_worker_contract_allows_read_only_without_approval(self):
+        script = Path(self.tmp.name) / "contract_worker.py"
+        script.write_text(
+            "import json,sys\n"
+            "request=json.load(sys.stdin)\n"
+            "json.dump({'progress':request['gated_action_contract']},sys.stdout)\n"
+        )
+        adapter = CommandWorkerAdapter(f"{sys.executable} {script}")
+        result = adapter.execute(self.goal(), {}, dry_run=True)
+        self.assertIn("Read-only inspection is always allowed", result.progress)
+        self.assertIn("privileged/gated actions", result.progress)
+
+
+    def assignment(self, version, body_suffix="", source=1, chat="Latest Worker"):
+        text = (f"PROJECT: Worker Orchestrator\nCHAT: {chat}\nREPOSITORY: nicofroeba16-cell/ha-grok-bridge\n"
+                f"BRANCH: fix/runtime\nGOAL_VERSION: {version}\nDONE_CRITERIA:\n- read README\n{body_suffix}")
+        return {"id": source, "body": text}
+
+    def test_latest_goal_wins_and_stays_winner_next_poll(self):
+        goals = parse_goals([self.assignment("v1", source=10), self.assignment("v2", source=20)])
+        self.assertEqual(len(goals), 1)
+        self.assertEqual(goals[0].version, "v2")
+        worker = ScriptedWorker([WorkerResult()])
+        engine = self.engine(worker)
+        engine.ingest_items([self.assignment("v1", source=10), self.assignment("v2", source=20)])
+        row = self.registry.get(goals[0].key)
+        self.assertEqual(row["goal_version"], "v2")
+        engine.ingest_items([self.assignment("v1", source=10)])
+        self.assertEqual(self.registry.get(goals[0].key)["goal_version"], "v2")
+
+    def test_same_version_new_hash_newer_source_reactivates_once(self):
+        g1 = parse_goal_text(self.assignment("same", source=10)["body"], source_comment_id=10)
+        g2 = parse_goal_text(self.assignment("same", "NOTE: changed\n", 20)["body"], source_comment_id=20)
+        self.assertTrue(self.registry.upsert_goal(g1)[0])
+        self.registry.set_state(g1.key, LifecycleState.DONE)
+        self.assertTrue(self.registry.upsert_goal(g2)[0])
+        self.assertEqual(self.registry.get(g1.key)["state"], "ASSIGNED")
+        self.assertFalse(self.registry.upsert_goal(g2)[0])
+        self.assertFalse(self.registry.upsert_goal(g1)[0])
+
+    def test_reports_are_not_goals(self):
+        base = "\nPROJECT: Worker Orchestrator\nCHAT: Report Worker\nREPOSITORY: nicofroeba16-cell/ha-grok-bridge\nBRANCH: fix/x\nGOAL_VERSION: v1\nDONE_CRITERIA:\n- x\n"
+        for marker in ("WORKER_STATUS", "WORKER_DONE", "WORKER_STALLED", "INTEGRATION_CONFLICT"):
+            self.assertIsNone(parse_goal_text(marker + base, source_comment_id=99), marker)
+
+    def test_base_branch_guard(self):
+        g = self.goal(branch="main")
+        worker = ScriptedWorker([WorkerResult()])
+        self.registry.upsert_goal(g)
+        self.assertEqual(self.engine(worker).dispatch_goal(g), LifecycleState.BLOCKED)
+        self.assertEqual(worker.calls, 0)
+        self.assertIn("BASE_BRANCH_GUARD", self.registry.get(g.key)["blockers"])
+
+    def test_done_and_waiting_remain_dormant_after_recovery(self):
+        for state, chat in ((LifecycleState.DONE, "Done"), (LifecycleState.WAITING_FOR_USER, "Wait")):
+            g = self.goal(chat=chat)
+            self.registry.upsert_goal(g)
+            self.registry.set_state(g.key, state)
+        self.assertEqual(self.registry.recover_interrupted(), [])
+        self.assertEqual(self.registry.get(self.goal(chat="Done").key)["state"], "DONE")
+        self.assertEqual(self.registry.get(self.goal(chat="Wait").key)["state"], "WAITING_FOR_USER")
+
+
+    def test_dirty_workspace_is_preserved_and_blocks_execution(self):
+        g = self.goal(branch="fix/runtime")
+        root = Path(self.tmp.name) / "workspaces"
+        ws = root / sha256(g.key.encode()).hexdigest()[:16]
+        ws.mkdir(parents=True)
+        subprocess.run(["git", "init", "-b", g.branch], cwd=ws, check=True, capture_output=True)
+        subprocess.run(["git", "remote", "add", "origin", f"https://github.com/{g.repository}.git"], cwd=ws, check=True)
+        marker = ws / "local-work.txt"
+        marker.write_text("keep me")
+        adapter = CommandWorkerAdapter("echo", workspace_root=root)
+        result = adapter.execute(g, {}, dry_run=False)
+        self.assertEqual(result.error, "WORKSPACE_DIRTY")
+        self.assertEqual(marker.read_text(), "keep me")
+
+
+    def test_worker_result_normalizes_non_mapping_evidence(self):
+        script = Path(self.tmp.name) / "evidence_worker.py"
+        script.write_text("import json; print(json.dumps({'evidence':['one','two'],'session_state':['bad']}))")
+        result = CommandWorkerAdapter(f"{sys.executable} {script}").execute(self.goal(), {}, dry_run=True)
+        self.assertEqual(result.evidence, {"details": ["one", "two"]})
+        self.assertEqual(result.session_state, {})
+
+    def test_engine_centrally_normalizes_malformed_worker_result(self):
+        g = self.goal()
+        worker = ScriptedWorker([{
+            "head": 123,
+            "ci": None,
+            "blockers": "not-a-list",
+            "evidence": ["unsafe-shape"],
+            "ready": "yes",
+        }])
+        engine = self.engine(worker)
+        self.registry.upsert_goal(g)
+        state = engine.dispatch_goal(g)
+        self.assertEqual(state, LifecycleState.BLOCKED)
+        row = self.registry.get(g.key)
+        self.assertEqual(row["ci_status"], "UNKNOWN")
+        evidence = json.loads(row["completion_evidence"])
+        self.assertEqual(evidence.get("reason"), "head is not a string")
+
+    def test_worker_exception_isolated_and_lock_released(self):
+        g = self.goal()
+
+        class ExplodingWorker:
+            def execute(self, goal, previous, *, dry_run):
+                raise RuntimeError("worker failure")
+
+        engine = self.engine(ExplodingWorker())
+        self.registry.upsert_goal(g)
+        self.assertEqual(engine.dispatch_goal(g), LifecycleState.BLOCKED)
+        self.assertIn("WORKER_EXECUTION_FAILED", self.registry.get(g.key)["blockers"])
+        self.assertEqual(self.registry.conn.execute("SELECT COUNT(*) FROM locks").fetchone()[0], 0)
+
+    def test_reporting_exception_does_not_abort_dispatch(self):
+        g = self.goal()
+        worker = ScriptedWorker([WorkerResult(progress="reported")])
+
+        def broken_reporter(*args):
+            raise RuntimeError("GitHub unavailable")
+
+        engine = Orchestrator(self.registry, worker, reporter=broken_reporter)
+        self.registry.upsert_goal(g)
+        self.assertEqual(engine.dispatch_goal(g), LifecycleState.RUNNING)
+        self.assertEqual(worker.calls, 1)
+        self.assertEqual(self.registry.get(g.key)["state"], "RUNNING")
+
+    def test_worker_result_normalization_contract_variants(self):
+        for evidence, expected in (
+            ({"key": "value"}, {"key": "value"}),
+            (["one"], {"details": ["one"]}),
+            ("text", {"details": "text"}),
+            (None, {}),
+            ([], {"details": []}),
+            ("", {}),
+        ):
+            with self.subTest(evidence=evidence):
+                result = normalize_worker_result({
+                    "head": "h", "ci": None, "evidence": evidence,
+                    "verified_criteria": "criterion", "blockers": None,
+                    "requested_actions": [], "changed_files": "file.py",
+                    "ready": "TrUe", "session_state": ["wrong"], "ignored": object(),
+                })
+                self.assertEqual(result.evidence, expected)
+                self.assertEqual(result.ci, "UNKNOWN")
+                self.assertEqual(result.verified_criteria, ("criterion",))
+                self.assertEqual(result.changed_files, ("file.py",))
+                self.assertTrue(result.ready)
+                self.assertEqual(result.session_state, {})
+                self.assertEqual(result.error, "")
+
+    def test_unsafe_worker_result_becomes_structured_invalid(self):
+        for raw in (
+            None, [], {"head": 1}, {"verified_criteria": ["ok", 2]},
+            {"evidence": 3}, {"ready": "maybe"}, {"ci": object()},
+        ):
+            with self.subTest(raw=raw):
+                result = normalize_worker_result(raw)
+                self.assertEqual(result.error, "WORKER_RESULT_INVALID")
+                self.assertEqual(result.blockers, ("WORKER_RESULT_INVALID",))
+                self.assertIsInstance(result.evidence, dict)
+
+    def test_each_worker_result_field_shape_failure_is_structured(self):
+        valid = {
+            "head": "head",
+            "ci": "GREEN",
+            "verified_criteria": ["criterion"],
+            "blockers": ["blocker"],
+            "requested_actions": ["inspect"],
+            "evidence": {"tests": "green"},
+            "progress": "progress",
+            "next_step": "next",
+            "ready": True,
+            "error": "error",
+            "changed_files": ["file.py"],
+            "session_state": {"phase": "test"},
+        }
+        malformed = {
+            "head": 1,
+            "ci": [],
+            "verified_criteria": ["ok", 2],
+            "blockers": {"not": "a collection"},
+            "requested_actions": [False],
+            "evidence": 3,
+            "progress": {},
+            "next_step": ["not a string"],
+            "ready": object(),
+            "error": 4,
+            "changed_files": [Path("file.py")],
+        }
+        for field, bad_value in malformed.items():
+            with self.subTest(field=field):
+                raw = dict(valid)
+                raw[field] = bad_value
+                result = normalize_worker_result(raw)
+                self.assertEqual(result.error, "WORKER_RESULT_INVALID")
+                self.assertEqual(result.blockers, ("WORKER_RESULT_INVALID",))
+                self.assertTrue(result.evidence.get("reason"), field)
+
+    def test_malformed_worker_result_instance_is_normalized(self):
+        raw = WorkerResult()
+        raw.head = 1
+        result = normalize_worker_result(raw)
+        self.assertEqual(result.error, "WORKER_RESULT_INVALID")
+        self.assertEqual(result.blockers, ("WORKER_RESULT_INVALID",))
+        self.assertIn("head", result.evidence["reason"])
+
+    def test_report_format_failure_is_recorded_and_retryable(self):
+        g = self.goal()
+        self.registry.upsert_goal(g)
+        engine = Orchestrator(self.registry, ScriptedWorker([WorkerResult()]), reporter=lambda *args: (_ for _ in ()).throw(ReportFormatError("bad format")))
+        engine.dispatch_goal(g)
+        events = self.registry.events(g.key)
+        self.assertTrue(any(event["event_type"] == "REPORT_FORMAT_FAILED" for event in events))
+        self.assertEqual(self.registry.get(g.key)["last_report_fingerprint"], "")
+
+    def test_report_fingerprint_persistence_failure_does_not_abort_dispatch(self):
+        g = self.goal()
+        self.registry.upsert_goal(g)
+        real_set_state = self.registry.set_state
+
+        def fail_fingerprint_write(worker_key, state, **fields):
+            if "last_report_fingerprint" in fields:
+                raise OSError("state database temporarily unavailable")
+            return real_set_state(worker_key, state, **fields)
+
+        with patch.object(self.registry, "set_state", side_effect=fail_fingerprint_write):
+            engine = self.engine(ScriptedWorker([WorkerResult(progress="persisted")]))
+            self.assertEqual(engine.dispatch_goal(g), LifecycleState.RUNNING)
+        self.assertEqual(self.registry.get(g.key)["state"], "RUNNING")
+        self.assertEqual(self.registry.get(g.key)["last_report_fingerprint"], "")
+        self.assertTrue(any(event["event_type"] == "REPORT_WRITE_FAILED" for event in self.registry.events(g.key)))
+
+    def test_report_failure_event_failure_is_swallowed(self):
+        g = self.goal()
+        self.registry.upsert_goal(g)
+        real_record_event = self.registry.record_event
+
+        def fail_report_event(worker_key, version, event_type, payload):
+            if event_type == "REPORT_WRITE_FAILED":
+                raise OSError("event database temporarily unavailable")
+            return real_record_event(worker_key, version, event_type, payload)
+
+        with patch.object(self.registry, "record_event", side_effect=fail_report_event):
+            engine = Orchestrator(
+                self.registry,
+                ScriptedWorker([WorkerResult(progress="still running")]),
+                reporter=lambda *args: (_ for _ in ()).throw(RuntimeError("API unavailable")),
+            )
+            self.assertEqual(engine.dispatch_goal(g), LifecycleState.RUNNING)
+
+    def test_reconcile_continues_after_worker_failure(self):
+        first = self.goal(project="A", chat="One")
+        second = self.goal(project="B", chat="Two", scope="other")
+        self.registry.upsert_goal(first)
+        self.registry.upsert_goal(second)
+
+        class AThenB:
+            def __init__(self):
+                self.calls = []
+            def execute(self, goal, previous, *, dry_run):
+                self.calls.append(goal.project)
+                if goal.project == "A":
+                    raise RuntimeError("A failed")
+                return WorkerResult(progress="B proceeded")
+
+        worker = AThenB()
+        engine = self.engine(worker)
+
+        class FakeGitHub:
+            def read_master_items(self, repo, issue):
+                return []
+
+        reconcile(engine, FakeGitHub(), "owner/repo", 1)
+        self.assertEqual(worker.calls, ["A", "B"])
+        self.assertEqual(self.registry.get(first.key)["state"], "BLOCKED")
+        self.assertEqual(self.registry.get(second.key)["state"], "RUNNING")
+        self.assertEqual(self.registry.conn.execute("SELECT COUNT(*) FROM locks").fetchone()[0], 0)
+
+    def test_reconcile_survives_github_poll_failure(self):
+        class BrokenGitHub:
+            def read_master_items(self, repo, issue):
+                raise OSError("offline")
+        reconcile(self.engine(ScriptedWorker([WorkerResult()])), BrokenGitHub(), "owner/repo", 1)
+
+    def test_reconcile_isolates_dispatch_boundary_exception(self):
+        first = self.goal(project="A", chat="Boundary A")
+        second = self.goal(project="B", chat="Boundary B", scope="other")
+        self.registry.upsert_goal(first)
+        self.registry.upsert_goal(second)
+
+        class BoundaryEngine:
+            def __init__(self, registry):
+                self.registry = registry
+                self.calls = []
+
+            def ingest_items(self, items):
+                return []
+
+            def dispatch_goal(self, goal):
+                self.calls.append(goal.project)
+                if goal.project == "A":
+                    raise RuntimeError("dispatch boundary failure")
+                return LifecycleState.RUNNING
+
+        engine = BoundaryEngine(self.registry)
+        github = type("GitHub", (), {"read_master_items": lambda *_: []})()
+        reconcile(engine, github, "owner/repo", 1)
+        self.assertEqual(engine.calls, ["A", "B"])
+        self.assertEqual(self.registry.get(first.key)["state"], "BLOCKED")
+        self.assertIn("ORCHESTRATOR_INTERNAL_ERROR", self.registry.get(first.key)["blockers"])
+        self.assertEqual(self.registry.get(second.key)["state"], "ASSIGNED")
+
+    def test_reconcile_survives_ingest_boundary_failure(self):
+        class BrokenEngine:
+            def __init__(self, registry):
+                self.registry = registry
+
+            def ingest_items(self, items):
+                raise RuntimeError("ingest failed")
+
+        github = type("GitHub", (), {"read_master_items": lambda *_: []})()
+        reconcile(BrokenEngine(self.registry), github, "owner/repo", 1)
 
 
 if __name__ == "__main__":

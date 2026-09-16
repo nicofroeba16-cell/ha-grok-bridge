@@ -46,7 +46,7 @@ class GitHubClient:
             msg = exc.read().decode(errors="replace")[:500]
             raise GitHubError(f"GitHub API {exc.code}: {msg}") from None
 
-    def read_master_items(self, repo: str, issue: int) -> list[dict]:
+    def read_issue_items(self, repo: str, issue: int) -> list[dict]:
         issue_obj = self._request("GET", f"/repos/{repo}/issues/{issue}")
         comments: list[dict] = []
         page = 1
@@ -57,6 +57,10 @@ class GitHubClient:
                 break
             page += 1
         return [{"id": None, "body": issue_obj.get("body", "")}, *comments]
+
+    def read_master_items(self, repo: str, issue: int) -> list[dict]:
+        """Backward-compatible name for the canonical Master issue read."""
+        return self.read_issue_items(repo, issue)
 
     def exact_head_ci(self, repo: str, head: str) -> str:
         if not head:

@@ -101,9 +101,12 @@ class Registry:
 
     def upsert_goal(self, goal: Goal):
         current = self.get(goal.key)
-        is_new_version = current is None or current["goal_hash"] != goal.hash
-        if not is_new_version:
-            return False, current
+        if current is not None:
+            current_source = -1 if current["source_comment_id"] is None else current["source_comment_id"]
+            incoming_source = -1 if goal.source_comment_id is None else goal.source_comment_id
+            if incoming_source < current_source or current["goal_hash"] == goal.hash:
+                return False, current
+        is_new_version = True
         with self.tx() as c:
             c.execute("""
                 INSERT INTO workers(
@@ -139,9 +142,12 @@ class Registry:
         return self.conn.execute("SELECT * FROM workers WHERE worker_key=?", (worker_key,)).fetchone()
 
     def list_dispatchable(self):
+        # BLOCKED is dormant for worker execution. Retryable documentation drift
+        # is reconciled independently by Orchestrator.reconcile_documentation(),
+        # so a blocked worker must not spawn a fresh Codex job every poll.
         return self.conn.execute(
-            "SELECT * FROM workers WHERE state IN (?, ?, ?) ORDER BY updated_at",
-            (LifecycleState.ASSIGNED, LifecycleState.BLOCKED, LifecycleState.READY),
+            "SELECT * FROM workers WHERE state IN (?, ?) ORDER BY updated_at",
+            (LifecycleState.ASSIGNED, LifecycleState.READY),
         ).fetchall()
 
     def list_all(self):
