@@ -26,9 +26,10 @@ options:
   initial_sync: ha_to_git
   dry_run: false
   max_snapshots: 10
-  exclude_names: .git,.storage,.cloud,.HA_VERSION,.ssh,.cache,.ai-control,secrets.yaml,home-assistant_v2.db,home-assistant_v2.db-shm,home-assistant_v2.db-wal,home-assistant_v2.db-journal,home-assistant.log,home-assistant.log.1,home-assistant.log.fault
-  exclude_dirs: tts,media,backups
+  exclude_names: .git,.storage,.cloud,.HA_VERSION,.ssh,.cache,.ai-control,.ha_run.lock,.hass_configurator_prefs.json,.ssh_known_hosts,secrets.yaml,home-assistant_v2.db,home-assistant_v2.db-shm,home-assistant_v2.db-wal,home-assistant_v2.db-journal,home-assistant.log,home-assistant.log.1,home-assistant.log.fault
+  exclude_dirs: tts,media,backups,.firetv-companion-backups,.patch-backups,.patch-stage,.patch-staging,luna-backups,ha-grok-bridge,ha-intelligence-suite
   exclude_suffixes: .passphrase,.pem,.key,.p12,.pfx
+  exclude_globs: "*.bak,*.bak-*,*.backup,*.backup-*,*.firetv-*-backup"
   secret_scan: true
   history_cleanup: false
   deploy_on_remote_change: true
@@ -45,6 +46,7 @@ schema:
   exclude_names: str
   exclude_dirs: str
   exclude_suffixes: str
+  exclude_globs: str
   secret_scan: bool
   history_cleanup: bool
   deploy_on_remote_change: bool

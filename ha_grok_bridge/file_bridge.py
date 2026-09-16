@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import fnmatch
 import hashlib
 import http.server
 import json
@@ -31,9 +32,10 @@ CONTROL_COMMANDS = Path(CONTROL_DIR) / "commands"
 CONTROL_RESULTS = Path(CONTROL_DIR) / "results"
 MAX_CONTROL_COMMANDS = 10
 
-DEFAULT_EXCLUDED_NAMES = {".git", ".storage", ".cloud", ".HA_VERSION", ".ssh", ".cache", ".ai-control", "secrets.yaml", "home-assistant_v2.db", "home-assistant_v2.db-shm", "home-assistant_v2.db-wal", "home-assistant_v2.db-journal", "home-assistant.log", "home-assistant.log.1", "home-assistant.log.fault"}
-DEFAULT_EXCLUDED_DIRS = {"tts", "media", "backups"}
+DEFAULT_EXCLUDED_NAMES = {".git", ".storage", ".cloud", ".HA_VERSION", ".ssh", ".cache", ".ai-control", ".ha_run.lock", ".hass_configurator_prefs.json", ".ssh_known_hosts", "secrets.yaml", "home-assistant_v2.db", "home-assistant_v2.db-shm", "home-assistant_v2.db-wal", "home-assistant_v2.db-journal", "home-assistant.log", "home-assistant.log.1", "home-assistant.log.fault"}
+DEFAULT_EXCLUDED_DIRS = {"tts", "media", "backups", ".firetv-companion-backups", ".patch-backups", ".patch-stage", ".patch-staging", "luna-backups", "ha-grok-bridge", "ha-intelligence-suite"}
 DEFAULT_EXCLUDED_SUFFIXES = {".passphrase", ".pem", ".key", ".p12", ".pfx"}
+DEFAULT_EXCLUDED_GLOBS = {"*.bak", "*.bak-*", "*.backup", "*.backup-*", "*.firetv-*-backup"}
 SENSITIVE_NAMES = {"secrets.yaml", ".env", ".env.local", ".env.production", ".env.development", "credentials.json", "credentials.yaml", "token.json", "service-account.json", "ha-grok-bridge.passphrase", "ha-file-sync-bridge.passphrase"}
 SECRET_PATTERNS = [re.compile(r"-----BEGIN (?:OPENSSH|RSA|EC|DSA|PRIVATE) KEY-----"), re.compile(r"\bghp_[A-Za-z0-9]{20,}\b"), re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b"), re.compile(r"\bAKIA[0-9A-Z]{16}\b"), re.compile(r"\bAIza[0-9A-Za-z_-]{30,}\b"), re.compile(r"\bxox[baprs]-[0-9A-Za-z-]{20,}\b"), re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b")]
 CONFIG_SECRET_RE = re.compile(r'''(?im)^\s*(?:api[_-]?key|access[_-]?token|client[_-]?secret|private[_-]?key|password|passwd|secret|token)\s*[:=]\s*["']([^"']{12,})["']\s*(?:#.*)?$''')
@@ -76,6 +78,7 @@ def cfg():
         "exclude_names": ",".join(sorted(DEFAULT_EXCLUDED_NAMES)),
         "exclude_dirs": ",".join(sorted(DEFAULT_EXCLUDED_DIRS)),
         "exclude_suffixes": ",".join(sorted(DEFAULT_EXCLUDED_SUFFIXES)),
+        "exclude_globs": ",".join(sorted(DEFAULT_EXCLUDED_GLOBS)),
         "secret_scan": True,
         "history_cleanup": False,
         "deploy_on_remote_change": True,
@@ -91,7 +94,10 @@ def csv(value, fallback):
 
 
 def excluded(name, c):
-    return name in csv(c.get("exclude_names"), DEFAULT_EXCLUDED_NAMES) or name in csv(c.get("exclude_dirs"), DEFAULT_EXCLUDED_DIRS) or any(name.endswith(s) for s in csv(c.get("exclude_suffixes"), DEFAULT_EXCLUDED_SUFFIXES))
+    return (name in csv(c.get("exclude_names"), DEFAULT_EXCLUDED_NAMES)
+            or name in csv(c.get("exclude_dirs"), DEFAULT_EXCLUDED_DIRS)
+            or any(name.endswith(s) for s in csv(c.get("exclude_suffixes"), DEFAULT_EXCLUDED_SUFFIXES))
+            or any(fnmatch.fnmatchcase(name, pattern) for pattern in csv(c.get("exclude_globs"), DEFAULT_EXCLUDED_GLOBS)))
 
 
 def ignored(path, c):
