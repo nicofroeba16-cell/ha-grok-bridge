@@ -59,7 +59,8 @@ class CommandWorkerAdapter:
     def _env(self) -> dict[str, str]:
         base_names = ("PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "TEMP")
         names = set(base_names).union(self.env_allowlist)
-        return {name: os.environ[name] for name in names if name in os.environ}
+        forbidden = {"GITHUB_TOKEN", "GH_TOKEN", "GITHUB_APP_PRIVATE_KEY"}
+        return {name: os.environ[name] for name in names if name in os.environ and name not in forbidden}
 
     def execute(self, goal: Goal, previous: dict, *, dry_run: bool) -> WorkerResult:
         payload = {
@@ -89,6 +90,7 @@ class CommandWorkerAdapter:
         workspace, workspace_error = self._workspace(goal)
         if workspace_error:
             return WorkerResult(error=workspace_error, blockers=(workspace_error,))
+        payload["workspace"] = str(workspace) if workspace else ""
         proc = subprocess.run(
             self.argv,
             input=json.dumps(payload),
@@ -108,6 +110,10 @@ class CommandWorkerAdapter:
         data = sanitize(data)
         allowed = set(WorkerResult.__dataclass_fields__)
         clean = {k: v for k, v in data.items() if k in allowed}
+        if "evidence" in clean and not isinstance(clean["evidence"], dict):
+            clean["evidence"] = {"details": clean["evidence"]}
+        if "session_state" in clean and not isinstance(clean["session_state"], dict):
+            clean["session_state"] = {}
         for field in ("verified_criteria", "blockers", "requested_actions", "changed_files"):
             if field in clean:
                 clean[field] = tuple(clean[field])

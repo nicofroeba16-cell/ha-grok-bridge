@@ -388,5 +388,13 @@ class Harness(unittest.TestCase):
         self.assertEqual(marker.read_text(), "keep me")
 
 
+    def test_worker_result_normalizes_non_mapping_evidence(self):
+        script = Path(self.tmp.name) / "evidence_worker.py"
+        script.write_text("import json; print(json.dumps({'evidence':['one','two'],'session_state':['bad']}))")
+        result = CommandWorkerAdapter(f"{sys.executable} {script}").execute(self.goal(), {}, dry_run=True)
+        self.assertEqual(result.evidence, {"details": ["one", "two"]})
+        self.assertEqual(result.session_state, {})
+
+
 if __name__ == "__main__":
     unittest.main()
