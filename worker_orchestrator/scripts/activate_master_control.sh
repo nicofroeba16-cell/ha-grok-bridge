@@ -18,14 +18,17 @@ fi
 
 systemctl --user is-enabled --quiet "$service_name"
 exec_start="$(systemctl --user show "$service_name" --property=ExecStart --value)"
-worker_bin="$(sed -nE 's/.*path=([^ ;]+).*/\1/p' <<<"$exec_start")"
+worker_bin="$(grep -oE '/[^ ;"]*/worker-orchestrator' <<<"$exec_start" | tail -n 1 || true)"
+if [[ -z "$worker_bin" ]]; then
+  worker_bin="$(sed -nE 's/.*path=([^ ;]+).*/\1/p' <<<"$exec_start")"
+fi
 if [[ -z "$worker_bin" || ! -x "$worker_bin" ]]; then
   echo "Unable to resolve the installed worker-orchestrator executable." >&2
   exit 1
 fi
 
 python_bin="$(sed -nE '1s/^#!(.*)$/\1/p' "$worker_bin")"
-if [[ ! -x "$python_bin" ]]; then
+if [[ ! -x "$python_bin" || "$(basename "$python_bin")" != python* ]]; then
   python_bin="$(dirname "$worker_bin")/python"
 fi
 if [[ ! -x "$python_bin" ]]; then
