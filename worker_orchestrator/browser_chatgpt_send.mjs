@@ -228,22 +228,33 @@ async function main() {
   if (!fs.existsSync(chromeBin)) fail('CHATGPT_CHROME_BIN does not exist', true);
 
   let browser;
+  let ownsBrowser = false;
   let sendCommitted = false;
   try {
-    browser = await puppeteer.launch({
-      executablePath: chromeBin,
-      userDataDir: profileDir,
-      headless: process.env.CHATGPT_BROWSER_HEADLESS !== 'false',
-      args: [
-        '--no-first-run',
-        '--disable-sync',
-        '--disable-background-networking',
-        '--disable-default-apps',
-      ],
-    });
+    const browserUrlRaw = String(process.env.CHATGPT_BROWSER_URL || '').trim();
+    if (browserUrlRaw) {
+      const browserUrl = new URL(browserUrlRaw);
+      if (browserUrl.protocol !== 'http:' || !['127.0.0.1', 'localhost'].includes(browserUrl.hostname) || !browserUrl.port || browserUrl.username || browserUrl.password) {
+        throw new Error('CHATGPT_BROWSER_URL must be a credential-free loopback HTTP URL with an explicit port');
+      }
+      browser = await puppeteer.connect({ browserURL: browserUrl.toString() });
+    } else {
+      browser = await puppeteer.launch({
+        executablePath: chromeBin,
+        userDataDir: profileDir,
+        headless: process.env.CHATGPT_BROWSER_HEADLESS !== 'false',
+        args: [
+          '--no-first-run',
+          '--disable-sync',
+          '--disable-background-networking',
+          '--disable-default-apps',
+        ],
+      });
+      ownsBrowser = true;
+    }
 
     const pages = await browser.pages();
-    const page = pages[0] || await browser.newPage();
+    const page = pages.find((candidate) => candidate.url().startsWith('https://chatgpt.com')) || pages[0] || await browser.newPage();
     const destination = request.destination.kind === 'title'
       ? await resolveByTitle(page, request.destination.title)
       : request.destination.url;
@@ -323,7 +334,10 @@ async function main() {
     fail(error, !sendCommitted);
   } finally {
     if (browser) {
-      try { await browser.close(); } catch (_) {}
+      try {
+        if (ownsBrowser) await browser.close();
+        else await browser.disconnect();
+      } catch (_) {}
     }
   }
 }
