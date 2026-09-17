@@ -64,7 +64,7 @@ if [[ -z "$runtime_repo" ]]; then
   exit 1
 fi
 
-if [[ -n "$(git -C "$runtime_repo" status --short)" ]]; then
+if [[ -n "$(git -C "$runtime_repo" status --short --untracked-files=no)" ]]; then
   echo "The durable runtime source has protected local changes; activation stopped." >&2
   exit 1
 fi
