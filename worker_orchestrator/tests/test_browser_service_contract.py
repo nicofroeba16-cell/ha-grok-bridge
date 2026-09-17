@@ -19,6 +19,7 @@ class BrowserServiceContractTests(unittest.TestCase):
         self.assertIn("--remote-debugging-port=9224", launcher)
         self.assertIn("chrome-profile-web-v2", self.text("scripts/prepare_browser_wake_services.sh"))
         self.assertNotRegex(launcher, r"\b(?:pkill|killall)\b")
+        self.assertNotIn("NoNewPrivileges=true", unit)
 
     def test_dispatcher_depends_on_chrome_and_health(self):
         unit = self.text("systemd/browser-wake.service")
