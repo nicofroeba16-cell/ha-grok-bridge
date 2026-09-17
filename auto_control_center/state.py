@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from typing import Any
 
 CI_FAILURE = {"RED", "FAILED", "FAILURE", "ERROR", "CANCELLED", "TIMED_OUT"}
 CI_RUNNING = {"RUNNING", "PENDING", "QUEUED", "IN_PROGRESS"}
 CI_SUCCESS = {"GREEN", "SUCCESS", "PASSED", "PASS"}
+
+WAKE_SUCCESS = {"DELIVERED", "SUCCESS", "SENT", "ACKNOWLEDGED"}
+WAKE_FAILURE = {"FAILED", "FAILURE", "FAILED_PRE_SEND", "ERROR", "BLOCKED"}
+WAKE_UNCERTAIN = {"UNCERTAIN"}
+WAKE_CANCELLED = {"CANCELLED", "CANCELLED_SUPERSEDED", "SUPERSEDED"}
 
 
 def _nonempty(value: Any) -> bool:
@@ -25,6 +31,20 @@ def ci_class(status: Any) -> str:
         return "red"
     if normalized in CI_RUNNING:
         return "running"
+    return "unknown"
+
+
+def wake_class(status: Any) -> str:
+    """Classify delivery status without collapsing UNCERTAIN into success or failure."""
+    normalized = str(status or "UNKNOWN").strip().upper()
+    if normalized in WAKE_SUCCESS:
+        return "green"
+    if normalized in WAKE_FAILURE:
+        return "red"
+    if normalized in WAKE_UNCERTAIN:
+        return "uncertain"
+    if normalized in WAKE_CANCELLED:
+        return "muted"
     return "unknown"
 
 
@@ -53,6 +73,38 @@ def resolve_worker(worker: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _shared_target_key(worker: dict[str, Any]) -> tuple[str, str, str] | None:
+    key = tuple(str(worker.get(field) or "").strip() for field in ("repository", "branch", "goal_version"))
+    return key if all(key) else None
+
+
+def annotate_registry_aliases(workers: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Mark shared repo/branch/goal targets while deliberately inferring no canonical identity."""
+    rows = [dict(worker) for worker in workers]
+    groups: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        key = _shared_target_key(row)
+        if key is not None:
+            groups[key].append(row)
+
+    for row in rows:
+        row["registry_shared_target"] = False
+        row["registry_identity_count"] = 1
+        row["registry_peer_keys"] = []
+        row["registry_identity_basis"] = "repository+branch+goal_version"
+
+    for group in groups.values():
+        if len(group) < 2:
+            continue
+        keys = sorted(str(row.get("worker_key") or "") for row in group if row.get("worker_key"))
+        for row in group:
+            worker_key = str(row.get("worker_key") or "")
+            row["registry_shared_target"] = True
+            row["registry_identity_count"] = len(group)
+            row["registry_peer_keys"] = [key for key in keys if key != worker_key]
+    return rows
+
+
 def evidence_for_worker(worker: dict[str, Any]) -> dict[str, Any]:
     verified = worker.get("verified_criteria")
     done = worker.get("done_criteria")
@@ -67,5 +119,7 @@ def evidence_for_worker(worker: dict[str, Any]) -> dict[str, Any]:
         "verified_criteria": verified_count,
         "done_criteria": done_count,
         "resolved_state": worker.get("resolved_state") or worker.get("state") or "UNKNOWN",
+        "registry_shared_target": bool(worker.get("registry_shared_target")),
+        "registry_identity_count": int(worker.get("registry_identity_count") or 1),
         "source": "orchestrator_ledger",
     }
