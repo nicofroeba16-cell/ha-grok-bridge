@@ -8,13 +8,20 @@ import time
 from pathlib import Path
 from typing import Any
 
+from .security import sanitize
+from .state import evidence_for_worker, resolve_worker
+
 ORCHESTRATOR_DB = Path(os.environ.get("ACC_ORCHESTRATOR_DB", "~/.local/share/worker-orchestrator/state.sqlite3")).expanduser()
 BROWSER_WAKE_DB = Path(os.environ.get("ACC_BROWSER_WAKE_DB", "~/.local/share/browser-wake/state/browser-wake.sqlite3")).expanduser()
 BROWSER_ROUTES = Path(os.environ.get("ACC_BROWSER_ROUTES", "~/.config/worker-orchestrator-browser-wake/browser-routes.json")).expanduser()
-SERVICES = tuple(x.strip() for x in os.environ.get(
-    "ACC_SYSTEMD_SERVICES",
-    "worker-orchestrator.service,browser-wake.service,browser-wake-chrome.service",
-).split(",") if x.strip())
+SERVICES = tuple(
+    x.strip()
+    for x in os.environ.get(
+        "ACC_SYSTEMD_SERVICES",
+        "worker-orchestrator.service,browser-wake.service,browser-wake-chrome.service",
+    ).split(",")
+    if x.strip()
+)
 
 JSON_FIELDS = {
     "workers": {"done_criteria", "files", "approved_actions", "blockers", "user_gate", "completion_evidence", "verified_criteria", "session_state"},
@@ -60,7 +67,7 @@ def _query(path: Path, table: str, sql: str, params: tuple[Any, ...] = ()) -> li
 
 
 def workers() -> list[dict[str, Any]]:
-    return _query(
+    rows = _query(
         ORCHESTRATOR_DB,
         "workers",
         """SELECT worker_key,project,chat,repository,branch,workstream_issue,
@@ -68,16 +75,18 @@ def workers() -> list[dict[str, Any]]:
                   last_progress,verified_criteria,done_criteria,updated_at
              FROM workers ORDER BY updated_at DESC, worker_key""",
     )
+    return [resolve_worker(sanitize(row)) for row in rows]
 
 
 def orchestrator_events(limit: int = 80) -> list[dict[str, Any]]:
     limit = max(1, min(int(limit), 500))
-    return _query(
+    rows = _query(
         ORCHESTRATOR_DB,
         "events",
         "SELECT id,worker_key,goal_version,event_type,payload,created_at FROM events ORDER BY id DESC LIMIT ?",
         (limit,),
     )
+    return sanitize(rows)
 
 
 def latest_master() -> dict[str, Any] | None:
@@ -100,25 +109,38 @@ def latest_master() -> dict[str, Any] | None:
     )
     master["children"] = children
     total = len(children)
-    done = sum(1 for child in children if child.get("state") == "DONE")
-    master["progress"] = {"done": done, "total": total, "percent": round(done * 100 / total) if total else 0}
-    return master
+    done = sum(1 for child in children if str(child.get("state") or "").upper() == "DONE")
+    master["progress"] = {
+        "done": done,
+        "total": total,
+        "percent": round(done * 100 / total) if total else 0,
+    }
+    return sanitize(master)
 
 
 def wake_deliveries(limit: int = 100) -> list[dict[str, Any]]:
     limit = max(1, min(int(limit), 500))
-    return _query(
+    rows = _query(
         BROWSER_WAKE_DB,
         "browser_wake_delivery",
         """SELECT message_id,route_key,status,attempts,last_error,updated_at
              FROM browser_wake_delivery ORDER BY updated_at DESC LIMIT ?""",
         (limit,),
     )
+    return sanitize(rows)
 
 
 def wake_queues() -> dict[str, int]:
-    workers_pending = _query(BROWSER_WAKE_DB, "browser_wake_pending_worker", "SELECT COUNT(*) AS n FROM browser_wake_pending_worker")
-    master_pending = _query(BROWSER_WAKE_DB, "browser_wake_pending_master", "SELECT COUNT(*) AS n FROM browser_wake_pending_master")
+    workers_pending = _query(
+        BROWSER_WAKE_DB,
+        "browser_wake_pending_worker",
+        "SELECT COUNT(*) AS n FROM browser_wake_pending_worker",
+    )
+    master_pending = _query(
+        BROWSER_WAKE_DB,
+        "browser_wake_pending_master",
+        "SELECT COUNT(*) AS n FROM browser_wake_pending_master",
+    )
     return {
         "workers": int(workers_pending[0]["n"]) if workers_pending else 0,
         "master": int(master_pending[0]["n"]) if master_pending else 0,
@@ -130,10 +152,18 @@ def route_summary() -> list[dict[str, Any]]:
         raw = json.loads(BROWSER_ROUTES.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return []
+    if not isinstance(raw, dict):
+        return []
     result = []
     for key, config in raw.items():
-        kind = "url" if isinstance(config, dict) and config.get("url") else "title" if isinstance(config, dict) and config.get("title") else "unknown"
-        result.append({"worker_key": key, "bound": kind != "unknown", "destination_kind": kind})
+        kind = (
+            "url"
+            if isinstance(config, dict) and config.get("url")
+            else "title"
+            if isinstance(config, dict) and config.get("title")
+            else "unknown"
+        )
+        result.append({"worker_key": sanitize(str(key)), "bound": kind != "unknown", "destination_kind": kind})
     return sorted(result, key=lambda x: (x["worker_key"] != "__master__", x["worker_key"]))
 
 
@@ -153,26 +183,49 @@ def service_states() -> list[dict[str, Any]]:
                 timeout=2,
                 env=env,
             )
-            fields = {k: v for line in proc.stdout.splitlines() if "=" in line for k, v in [line.split("=", 1)]}
-            states.append({"name": name, "active": fields.get("ActiveState", "unknown"), "sub": fields.get("SubState", "unknown"), "result": fields.get("Result", "unknown")})
+            fields = {
+                k: v
+                for line in proc.stdout.splitlines()
+                if "=" in line
+                for k, v in [line.split("=", 1)]
+            }
+            states.append(
+                {
+                    "name": sanitize(name),
+                    "active": fields.get("ActiveState", "unknown"),
+                    "sub": fields.get("SubState", "unknown"),
+                    "result": fields.get("Result", "unknown"),
+                }
+            )
         except (OSError, subprocess.SubprocessError):
-            states.append({"name": name, "active": "unavailable", "sub": "unknown", "result": "unknown"})
+            states.append({"name": sanitize(name), "active": "unavailable", "sub": "unknown", "result": "unknown"})
     return states
+
+
+def _source_state(path: Path) -> dict[str, bool]:
+    present = path.is_file()
+    return {"present": present, "readable": present and os.access(path, os.R_OK)}
 
 
 def source_health() -> dict[str, Any]:
     return {
-        "orchestrator_db": {"path": str(ORCHESTRATOR_DB), "readable": os.access(ORCHESTRATOR_DB, os.R_OK)},
-        "browser_wake_db": {"path": str(BROWSER_WAKE_DB), "readable": os.access(BROWSER_WAKE_DB, os.R_OK)},
-        "browser_routes": {"path": str(BROWSER_ROUTES), "readable": os.access(BROWSER_ROUTES, os.R_OK)},
+        "orchestrator_db": _source_state(ORCHESTRATOR_DB),
+        "browser_wake_db": _source_state(BROWSER_WAKE_DB),
+        "browser_routes": _source_state(BROWSER_ROUTES),
         "generated_at": time.time(),
     }
+
+
+def evidence_overview(worker_rows: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    rows = worker_rows if worker_rows is not None else workers()
+    return [evidence_for_worker(row) for row in rows]
 
 
 def dashboard() -> dict[str, Any]:
     worker_rows = workers()
     wake_rows = wake_deliveries()
     master = latest_master()
+    evidence = evidence_overview(worker_rows)
     return {
         "health": source_health(),
         "master": master,
@@ -182,10 +235,12 @@ def dashboard() -> dict[str, Any]:
         "wake_queues": wake_queues(),
         "routes": route_summary(),
         "services": service_states(),
+        "evidence": evidence,
         "stats": {
             "workers": len(worker_rows),
-            "running": sum(1 for row in worker_rows if row.get("state") == "RUNNING"),
-            "blocked": sum(1 for row in worker_rows if row.get("state") in {"BLOCKED", "STALLED", "WAITING_FOR_USER"}),
-            "wake_uncertain": sum(1 for row in wake_rows if row.get("status") == "UNCERTAIN"),
+            "running": sum(1 for row in worker_rows if row.get("resolved_state") == "RUNNING"),
+            "blocked": sum(1 for row in worker_rows if row.get("resolved_state") in {"BLOCKED", "STALLED", "WAITING_FOR_USER"}),
+            "wake_uncertain": sum(1 for row in wake_rows if str(row.get("status") or "").upper() == "UNCERTAIN"),
+            "ci_red": sum(1 for row in evidence if row.get("ci_class") == "red"),
         },
     }
