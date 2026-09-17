@@ -118,3 +118,61 @@ Use repository-scoped credentials with only the read/write permissions needed fo
 Master ingestion is latest-assignment-wins per exact `Projekt → Chat` worker key. GitHub source comment IDs are the monotonic authority; older assignments cannot supersede a newer persisted source, even across later polls or restarts. Orchestrator reports (`WORKER_STATUS`, `WORKER_DONE`, `WORKER_STALLED`, `INTEGRATION_CONFLICT`) are rejected as assignments.
 
 Daemon execution uses isolated per-worker workspaces under `WORKSPACE_ROOT` (default `/home/vboxuser/.local/share/worker-orchestrator/workspaces`). Existing workspaces must match the assigned repository origin and exact branch and must be clean; mismatches or dirty work fail closed without reset or cleanup. Direct `main`/`master` work is blocked unless the current Goal explicitly approves a privileged base-branch action.
+
+## Master control plane
+
+The optional control plane turns one canonical `MASTER_REQUEST` in Master Issue
+#3 into a deterministic dependency graph of exact `Projekt → Chat` goals. It
+stores the plan, child state, dispatch ledger and audit events in the existing
+SQLite database. A child is dispatched only after every declared dependency is
+`DONE`; duplicate dispatch is suppressed across polls and restarts. Global
+`DONE` is emitted only when every child is verified `DONE`. `BLOCKED`,
+`STALLED`, and `WAITING_FOR_USER` remain visible and cannot be converted into a
+false success.
+
+Enable it explicitly:
+
+    MASTER_CONTROL_ENABLED=true
+    MASTER_CONTROL_ISSUE=9
+    CHAT_ROUTES_JSON='{"Projekt: Example → Chat: Worker":{"transport":"github_master","destination":"issue:3"}}'
+    worker-orchestrator --allow-non-dry-run run
+
+Supported route transports are deliberately narrow:
+
+- `github_master` writes the exact child GOAL PROMPT to Master Issue #3 for the
+  existing runner execution layer.
+- `outbox` appends a deduplicated relay record to `MASTER_OUTBOX`; the record is
+  marked `relay_pending`.
+
+An unconfigured target fails closed with `CHAT_ROUTE_UNBOUND`. The package does
+not claim to wake an arbitrary ChatGPT UI conversation. Such a wake requires a
+separate authenticated, verified relay; unsupported transport names are
+rejected during startup.
+
+Canonical request format:
+
+    MASTER_REQUEST
+    REQUEST_ID: example-v1
+    GOAL_VERSION: v1
+    REQUEST: Complete the example work graph
+    GLOBAL_DONE_CRITERIA:
+    - every child is DONE
+    WORK_GRAPH_JSON:
+    [
+      {
+        "id": "worker-a",
+        "project": "Example",
+        "chat": "Worker A",
+        "repository": "owner/repository",
+        "branch": "feat/worker-a",
+        "workstream_issue": 10,
+        "files": ["path/a"],
+        "scope": "worker-a",
+        "depends_on": [],
+        "done_criteria": ["criterion is verified"]
+      }
+    ]
+
+Material request drift creates a new deterministic plan and reopens affected
+children. The audit log is sufficient to reconstruct plan creation, routing,
+delivery failures and the message id used for each dispatch.

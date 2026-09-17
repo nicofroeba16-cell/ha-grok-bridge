@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - "codex/worker-orchestrator-*"
+      - "feat/master-autonomous-orchestration"
     paths:
       - "worker_orchestrator/**"
       - ".github/workflows/worker-orchestrator.yml"

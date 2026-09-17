@@ -10,6 +10,7 @@ from hashlib import sha256
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from .control_plane import MasterControlPlane, RouteRegistry
 from .engine import DocumentationDriftError, Orchestrator, format_report
 from .github_client import GitHubClient
 from .models import DEFAULT_ALLOWED_REPOSITORIES, Goal, LifecycleState
@@ -25,6 +26,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--worker-command", default=os.environ.get("WORKER_COMMAND", ""))
     parser.add_argument("--workspace-root", default=os.environ.get("WORKSPACE_ROOT", "/home/vboxuser/.local/share/worker-orchestrator/workspaces"))
     parser.add_argument("--poll-seconds", type=int, default=int(os.environ.get("RECONCILE_SECONDS", "300")))
+    parser.add_argument(
+        "--enable-control-plane",
+        action="store_true",
+        default=os.environ.get("MASTER_CONTROL_ENABLED", "").lower() in {"1", "true", "yes"},
+    )
+    parser.add_argument("--chat-routes-json", default=os.environ.get("CHAT_ROUTES_JSON", ""))
+    parser.add_argument("--master-control-issue", type=int, default=int(os.environ.get("MASTER_CONTROL_ISSUE", "9")))
+    parser.add_argument("--master-outbox", default=os.environ.get("MASTER_OUTBOX", ""))
     parser.add_argument(
         "--allow-non-dry-run",
         action="store_true",
@@ -74,7 +83,13 @@ def make_reporter(gh: GitHubClient, master_repo: str, master_issue: int):
     return report
 
 
-def reconcile(engine: Orchestrator, gh: GitHubClient, master_repo: str, master_issue: int) -> None:
+def reconcile(
+    engine: Orchestrator,
+    gh: GitHubClient,
+    master_repo: str,
+    master_issue: int,
+    control_plane: MasterControlPlane | None = None,
+) -> None:
     try:
         items = gh.read_master_items(master_repo, master_issue)
         # Reconcile persisted workers before ingesting a newly assigned goal;
@@ -112,6 +127,13 @@ def reconcile(engine: Orchestrator, gh: GitHubClient, master_repo: str, master_i
                 )
             except Exception:
                 pass
+    if control_plane is not None:
+        try:
+            control_plane.reconcile(items, engine.registry.list_all())
+        except Exception:
+            # Control-plane failure is isolated from the worker daemon. The
+            # next poll retries from SQLite and its dispatch dedupe ledger.
+            pass
 
 
 def webhook_server(host: str, port: int, wake: threading.Event, secret: str):
@@ -194,8 +216,21 @@ def main(argv: list[str] | None = None) -> int:
         allowed_repositories=allowed_repos,
     )
 
+    control_plane = None
+    if args.enable_control_plane:
+        routes = RouteRegistry.from_json(args.chat_routes_json)
+        control_plane = MasterControlPlane(
+            registry.conn,
+            routes,
+            github_dispatch=lambda destination, body: gh.post_issue_comment(
+                args.master_repo, int(destination.split(":", 1)[1]), body
+            ),
+            outbox_path=args.master_outbox or None,
+            reporter=lambda body: gh.post_issue_comment(args.master_repo, args.master_control_issue, body),
+        )
+
     if args.cmd == "once":
-        reconcile(engine, gh, args.master_repo, args.master_issue)
+        reconcile(engine, gh, args.master_repo, args.master_issue, control_plane)
         registry.close()
         return 0
 
@@ -212,7 +247,7 @@ def main(argv: list[str] | None = None) -> int:
     signal.signal(signal.SIGTERM, stop_handler)
     try:
         while not stop.is_set():
-            reconcile(engine, gh, args.master_repo, args.master_issue)
+            reconcile(engine, gh, args.master_repo, args.master_issue, control_plane)
             wake.wait(timeout=max(30, args.poll_seconds))
             wake.clear()
     finally:
