@@ -40,7 +40,14 @@ async function waitForAssistantCompletion(page, before, timeoutMs = 120000) {
     let complete = false;
     try {
       complete = await page.evaluate((before) => {
-        const assistantCount = document.querySelectorAll('[data-message-author-role="assistant"]').length;
+        const assistantTurns = [...document.querySelectorAll('[data-message-author-role="assistant"]')];
+        const currentIds = assistantTurns
+          .map((turn) => turn.getAttribute('data-message-id'))
+          .filter(Boolean);
+        const previousIds = new Set(before.ids || []);
+        const hasNewIdentity = currentIds.some((id) => !previousIds.has(id));
+        const identityAvailable = currentIds.length > 0 || previousIds.size > 0;
+        const hasNewAssistant = identityAvailable ? hasNewIdentity : assistantTurns.length > before.count;
         const stop = document.querySelector([
           'button[data-testid="stop-button"]',
           'button[aria-label="Stop generating"]',
@@ -52,7 +59,7 @@ async function waitForAssistantCompletion(page, before, timeoutMs = 120000) {
           '#prompt-textarea',
           'textarea[data-testid="prompt-textarea"]',
         ].join(','));
-        return assistantCount > before && !stop && !!composer;
+        return hasNewAssistant && !stop && !!composer;
       }, before);
     } catch (_) {
       complete = false;
@@ -364,9 +371,13 @@ async function main() {
       return [...document.querySelectorAll('[data-message-author-role="user"]')]
         .filter((turn) => normalize(turn.innerText || turn.textContent || '').includes(expected)).length;
     }, expectedPayload);
-    const assistantTurnsBefore = await page.evaluate(() =>
-      document.querySelectorAll('[data-message-author-role="assistant"]').length
-    );
+    const assistantTurnsBefore = await page.evaluate(() => {
+      const turns = [...document.querySelectorAll('[data-message-author-role="assistant"]')];
+      return {
+        count: turns.length,
+        ids: turns.map((turn) => turn.getAttribute('data-message-id')).filter(Boolean),
+      };
+    });
 
     // From this point onward a process interruption is delivery-uncertain.
     // The Python ledger deliberately never retries uncertain sends automatically.

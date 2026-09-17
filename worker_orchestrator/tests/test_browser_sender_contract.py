@@ -18,6 +18,9 @@ class BrowserSenderCompletionContractTests(unittest.TestCase):
         self.assertIn("async function waitForPersistedUserTurn", source)
         self.assertIn("timeoutMs = 60000", source)
         self.assertIn("transient ChatGPT redirects/navigation context changes", source)
+        self.assertIn("data-message-id", source)
+        self.assertIn("hasNewIdentity", source)
+        self.assertIn("identityAvailable ? hasNewIdentity : assistantTurns.length > before.count", source)
 
 
 if __name__ == "__main__":
