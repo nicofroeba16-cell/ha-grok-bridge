@@ -279,7 +279,7 @@ class WakeLedger:
 class CommandBrowserSender:
     """Input-only sender. The helper returns delivery metadata, never ChatGPT output."""
 
-    def __init__(self, command: str, *, timeout: int = 45):
+    def __init__(self, command: str, *, timeout: int = 330):
         parts = shlex.split(command)
         if not parts:
             raise BrowserWakeError("BROWSER_WAKE_COMMAND is required")
@@ -293,7 +293,10 @@ class CommandBrowserSender:
                 self.command, input=request + "\n", text=True, capture_output=True,
                 timeout=self.timeout, check=False,
             )
-        except (OSError, subprocess.TimeoutExpired) as exc:
+        except subprocess.TimeoutExpired as exc:
+            # The child may already have clicked Send; an outer timeout is never retry-safe.
+            raise BrowserWakeUncertainError(str(exc)) from exc
+        except OSError as exc:
             raise BrowserWakePreSendError(str(exc)) from exc
         lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
         result = {}

@@ -14,6 +14,85 @@ function normalizeText(value) {
   return String(value || '').replace(/\s+/g, ' ').trim();
 }
 
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function waitForUserTurnIncrease(page, expected, before, timeoutMs = 20000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const matches = await page.evaluate((expected) => {
+        const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+        return [...document.querySelectorAll('[data-message-author-role="user"]')]
+          .filter((turn) => normalize(turn.innerText || turn.textContent || '').includes(expected)).length;
+      }, expected);
+      if (matches > before) return true;
+    } catch (_) {}
+    await sleep(250);
+  }
+  return false;
+}
+
+async function waitForAssistantCompletion(page, before, timeoutMs = 120000) {
+  const deadline = Date.now() + timeoutMs;
+  let stableSince = 0;
+  while (Date.now() < deadline) {
+    let complete = false;
+    try {
+      complete = await page.evaluate((before) => {
+        const assistantTurns = [...document.querySelectorAll('[data-message-author-role="assistant"]')];
+        const currentIds = assistantTurns
+          .map((turn) => turn.getAttribute('data-message-id'))
+          .filter(Boolean);
+        const previousIds = new Set(before.ids || []);
+        const hasNewIdentity = currentIds.some((id) => !previousIds.has(id));
+        const identityAvailable = currentIds.length > 0 || previousIds.size > 0;
+        const hasNewAssistant = identityAvailable ? hasNewIdentity : assistantTurns.length > before.count;
+        const stop = document.querySelector([
+          'button[data-testid="stop-button"]',
+          'button[aria-label="Stop generating"]',
+          'button[aria-label="Generierung stoppen"]',
+          'button[aria-label="Antwortgenerierung beenden"]',
+        ].join(','));
+        const composer = document.querySelector([
+          '[data-testid="prompt-textarea"]',
+          '#prompt-textarea',
+          'textarea[data-testid="prompt-textarea"]',
+        ].join(','));
+        return hasNewAssistant && !stop && !!composer;
+      }, before);
+    } catch (_) {
+      complete = false;
+    }
+    if (complete) {
+      if (!stableSince) stableSince = Date.now();
+      if (Date.now() - stableSince >= 1500) return true;
+    } else {
+      stableSince = 0;
+    }
+    await sleep(300);
+  }
+  return false;
+}
+
+async function waitForPersistedUserTurn(page, expected, timeoutMs = 60000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const state = await page.evaluate((expected) => {
+        const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+        const inConversation = location.hostname === 'chatgpt.com' && location.pathname.includes('/c/');
+        const persisted = [...document.querySelectorAll('[data-message-author-role="user"]')]
+          .some((turn) => normalize(turn.innerText || turn.textContent || '').includes(expected));
+        return { inConversation, persisted };
+      }, expected);
+      if (state.inConversation && state.persisted) return true;
+    } catch (_) {}
+    await sleep(500);
+  }
+  return false;
+}
+
 function validateConcreteUrl(raw) {
   const url = new URL(raw);
   if (url.protocol !== 'https:' || url.hostname !== 'chatgpt.com' || url.port || url.username || url.password) {
@@ -292,66 +371,39 @@ async function main() {
       return [...document.querySelectorAll('[data-message-author-role="user"]')]
         .filter((turn) => normalize(turn.innerText || turn.textContent || '').includes(expected)).length;
     }, expectedPayload);
-    const assistantTurnsBefore = await page.evaluate(() =>
-      document.querySelectorAll('[data-message-author-role="assistant"]').length
-    );
+    const assistantTurnsBefore = await page.evaluate(() => {
+      const turns = [...document.querySelectorAll('[data-message-author-role="assistant"]')];
+      return {
+        count: turns.length,
+        ids: turns.map((turn) => turn.getAttribute('data-message-id')).filter(Boolean),
+      };
+    });
 
     // From this point onward a process interruption is delivery-uncertain.
     // The Python ledger deliberately never retries uncertain sends automatically.
     sendCommitted = true;
     await send.click();
 
-    try {
-      await page.waitForFunction(({ expected, before }) => {
-        const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
-        const matches = [...document.querySelectorAll('[data-message-author-role="user"]')]
-          .filter((turn) => normalize(turn.innerText || turn.textContent || '').includes(expected)).length;
-        return matches > before;
-      }, { timeout: 12000, polling: 200 }, { expected: expectedPayload, before: matchingUserTurnsBefore });
-    } catch (_) {
+    if (!await waitForUserTurnIncrease(page, expectedPayload, matchingUserTurnsBefore)) {
       throw new Error('post-send delivery could not be verified in ChatGPT conversation');
     }
 
-    // Do not reload while ChatGPT is still producing the response. A reload during
-    // generation can interrupt server-side turn persistence. We inspect only turn
-    // counts and control state here; assistant output content is never scraped.
-    try {
-      await page.waitForFunction(({ before }) => {
-        const assistantCount = document.querySelectorAll('[data-message-author-role="assistant"]').length;
-        const stop = document.querySelector([
-          'button[data-testid="stop-button"]',
-          'button[aria-label="Stop generating"]',
-          'button[aria-label="Generierung stoppen"]',
-          'button[aria-label="Antwortgenerierung beenden"]',
-        ].join(','));
-        const composer = document.querySelector([
-          '[data-testid="prompt-textarea"]',
-          '#prompt-textarea',
-          'textarea[data-testid="prompt-textarea"]',
-        ].join(','));
-        return assistantCount > before && !stop && !!composer;
-      }, { timeout: 120000, polling: 300 }, { before: assistantTurnsBefore });
-      await new Promise((resolve) => setTimeout(resolve, 1500));
-      const stable = await page.evaluate(({ before }) => {
-        const assistantCount = document.querySelectorAll('[data-message-author-role="assistant"]').length;
-        const stop = document.querySelector('button[data-testid="stop-button"],button[aria-label="Stop generating"],button[aria-label="Generierung stoppen"],button[aria-label="Antwortgenerierung beenden"]');
-        return assistantCount > before && !stop;
-      }, { before: assistantTurnsBefore });
-      if (!stable) throw new Error('assistant completion state was not stable');
-    } catch (_) {
+    // Do not reload while ChatGPT is still producing the response. These pollers
+    // deliberately survive transient ChatGPT redirects/navigation context changes.
+    // Assistant output content is never scraped.
+    if (!await waitForAssistantCompletion(page, assistantTurnsBefore)) {
       throw new Error('ChatGPT response did not finish before persistence check');
     }
 
     // A newly-rendered user turn can be optimistic UI only. Require persistence
-    // across a full reload after the assistant response has completed.
+    // across a full reload. ChatGPT may transiently route through `/` before the
+    // project conversation hydrates again, so verify across that navigation race.
     try {
       await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 });
-      await page.waitForFunction((expected) => {
-        const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
-        return [...document.querySelectorAll('[data-message-author-role="user"]')]
-          .some((turn) => normalize(turn.innerText || turn.textContent || '').includes(expected));
-      }, { timeout: 15000, polling: 250 }, expectedPayload);
     } catch (_) {
+      // A navigation timeout after Send is uncertain; continue read-only polling.
+    }
+    if (!await waitForPersistedUserTurn(page, expectedPayload)) {
       throw new Error('post-send delivery was not persisted after ChatGPT reload');
     }
 
