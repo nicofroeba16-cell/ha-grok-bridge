@@ -1,0 +1,20 @@
+[Unit]
+Description=AUTO Control Center (read-only)
+After=network-online.target worker-orchestrator.service browser-wake.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.local/share/auto-control-center/current
+Environment=PYTHONUNBUFFERED=1
+Environment=ACC_ORCHESTRATOR_DB=%h/.local/share/worker-orchestrator/state.sqlite3
+Environment=ACC_BROWSER_WAKE_DB=%h/.local/share/browser-wake/state/browser-wake.sqlite3
+Environment=ACC_BROWSER_ROUTES=%h/.config/worker-orchestrator-browser-wake/browser-routes.json
+ExecStart=%h/.local/share/auto-control-center/venv/bin/uvicorn auto_control_center.app:app --host 127.0.0.1 --port 8877
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+UMask=0077
+
+[Install]
+WantedBy=default.target
