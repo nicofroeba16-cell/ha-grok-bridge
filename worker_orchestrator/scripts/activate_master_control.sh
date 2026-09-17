@@ -32,30 +32,62 @@ if [[ -z "$worker_bin" || ! -x "$worker_bin" ]]; then
   exit 1
 fi
 
-python_bin="$(sed -nE '1s/^#!(.*)$/\1/p' "$worker_bin")"
-if [[ ! -x "$python_bin" || "$(basename "$python_bin")" != python* ]]; then
-  python_bin="$(dirname "$worker_bin")/python"
-fi
-if [[ ! -x "$python_bin" ]]; then
-  echo "The service Python environment could not be resolved." >&2
+python_bin="$(command -v python3 || true)"
+if [[ -z "$python_bin" || ! -x "$python_bin" ]]; then
+  echo "Python 3 is unavailable on the runner." >&2
   exit 1
 fi
+
+current_pid="$(systemctl --user show "$service_name" --property=MainPID --value)"
+runtime_repo=""
+candidate_paths=("$(readlink -f "/proc/$current_pid/cwd")" "$(dirname "$worker_bin")")
+while IFS= read -r -d '' entry; do
+  if [[ "$entry" == PYTHONPATH=* ]]; then
+    IFS=':' read -r -a python_paths <<<"${entry#PYTHONPATH=}"
+    candidate_paths+=("${python_paths[@]}")
+  fi
+done <"/proc/$current_pid/environ"
+while IFS= read -r candidate; do
+  candidate_paths+=("$(dirname "$candidate")")
+done < <(grep -oE '/[^ ;"]+' "$worker_bin" 2>/dev/null || true)
+
+for candidate in "${candidate_paths[@]}"; do
+  [[ -d "$candidate" ]] || continue
+  root="$(git -C "$candidate" rev-parse --show-toplevel 2>/dev/null || true)"
+  if [[ -n "$root" && -f "$root/worker_orchestrator/pyproject.toml" ]]; then
+    runtime_repo="$root"
+    break
+  fi
+done
+if [[ -z "$runtime_repo" ]]; then
+  echo "The durable worker-orchestrator source checkout could not be resolved." >&2
+  exit 1
+fi
+
+if [[ -n "$(git -C "$runtime_repo" status --short)" ]]; then
+  echo "The durable runtime source has protected local changes; activation stopped." >&2
+  exit 1
+fi
+git -C "$runtime_repo" fetch origin main
+runtime_remote_head="$(git -C "$runtime_repo" rev-parse FETCH_HEAD)"
+if [[ "$runtime_remote_head" != "$GITHUB_SHA" ]]; then
+  echo "The durable runtime fetch did not resolve to the workflow head." >&2
+  exit 1
+fi
+git -C "$runtime_repo" checkout main
+git -C "$runtime_repo" merge --ff-only "$runtime_remote_head"
 
 PYTHONPATH="$GITHUB_WORKSPACE/worker_orchestrator/src" \
   "$python_bin" -m unittest discover -s "$GITHUB_WORKSPACE/worker_orchestrator/tests" -q
 "$python_bin" -m compileall -q \
   "$GITHUB_WORKSPACE/worker_orchestrator/src" \
   "$GITHUB_WORKSPACE/worker_orchestrator/tests"
-"$python_bin" -m pip install --disable-pip-version-check --no-deps --force-reinstall \
-  "$GITHUB_WORKSPACE/worker_orchestrator"
-
-installed_package_dir="$($python_bin -c 'import pathlib,worker_orchestrator; print(pathlib.Path(worker_orchestrator.__file__).resolve().parent)')"
 cmp -s \
   "$GITHUB_WORKSPACE/worker_orchestrator/src/worker_orchestrator/control_plane.py" \
-  "$installed_package_dir/control_plane.py"
+  "$runtime_repo/worker_orchestrator/src/worker_orchestrator/control_plane.py"
 cmp -s \
   "$GITHUB_WORKSPACE/worker_orchestrator/src/worker_orchestrator/goals.py" \
-  "$installed_package_dir/goals.py"
+  "$runtime_repo/worker_orchestrator/src/worker_orchestrator/goals.py"
 
 config_dir="$HOME/.config/worker-orchestrator"
 dropin_dir="$HOME/.config/systemd/user/$service_name.d"
@@ -118,7 +150,13 @@ if [[ -z "$after_pid" || "$after_pid" == "0" || "$after_pid" == "$before_pid" ]]
   exit 1
 fi
 
-version="$($python_bin -c 'from importlib.metadata import version; print(version("runner-worker-orchestrator"))')"
+version="$($python_bin - "$runtime_repo/worker_orchestrator/pyproject.toml" <<'PY'
+import sys
+import tomllib
+with open(sys.argv[1], "rb") as handle:
+    print(tomllib.load(handle)["project"]["version"])
+PY
+)"
 if [[ "$version" != "0.2.0" ]]; then
   echo "Unexpected installed runner-worker-orchestrator version: $version" >&2
   exit 1
