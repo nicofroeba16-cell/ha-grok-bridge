@@ -8,11 +8,16 @@ class SimulationHarnessTests(unittest.TestCase):
     def test_mixed_simulation_exercises_all_required_worker_states(self):
         payload = build_simulation(worker_count=32, event_count=80, wake_count=48)
         states = {row["resolved_state"] for row in payload["workers"]}
-        for required in {"RUNNING", "READY", "BLOCKED", "WAITING_FOR_USER", "DONE", "DORMANT"}:
+        for required in {"RUNNING", "READY", "BLOCKED", "WAITING_FOR_USER", "DONE", "DORMANT", "ERROR"}:
             self.assertIn(required, states)
-        # ERROR is intentionally resolved to BLOCKED when its simulated CI is failing.
-        self.assertTrue(any(row.get("state") == "ERROR" for row in payload["workers"]))
         self.assertEqual(len(WORKER_STATES), 8)
+
+    def test_ci_failure_precedence_is_exercised_separately_from_error_state(self):
+        payload = build_simulation(worker_count=32)
+        ci_failed = [row for row in payload["workers"] if row.get("ci_status") == "FAILURE"]
+        self.assertTrue(ci_failed)
+        self.assertTrue(all(row["resolved_state"] == "BLOCKED" for row in ci_failed))
+        self.assertTrue(any(row["resolved_state"] == "ERROR" for row in payload["workers"]))
 
     def test_wake_matrix_keeps_uncertain_failure_success_and_cancelled_distinct(self):
         payload = build_simulation(worker_count=12, wake_count=60)
