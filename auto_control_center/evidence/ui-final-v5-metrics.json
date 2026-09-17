@@ -1,0 +1,203 @@
+{
+  "desktop-1440x1100": {
+    "vw": 1440,
+    "bodyScroll": 1440,
+    "navScroll": 1412,
+    "navClient": 1412,
+    "workerCols": "453.328px 453.328px 453.344px",
+    "workers": 24,
+    "rawEnums": false,
+    "debugLeak": false,
+    "activeNav": "Übersicht",
+    "filterText": "24/24 shown",
+    "navBoxes": [
+      {
+        "left": 18,
+        "right": 90.75,
+        "width": 72.75
+      },
+      {
+        "left": 95.75,
+        "right": 155.453125,
+        "width": 59.703125
+      },
+      {
+        "left": 160.453125,
+        "right": 230.765625,
+        "width": 70.3125
+      },
+      {
+        "left": 235.765625,
+        "right": 301.171875,
+        "width": 65.40625
+      },
+      {
+        "left": 306.171875,
+        "right": 367.3125,
+        "width": 61.140625
+      }
+    ],
+    "navContained": true
+  },
+  "iphone-393x852": {
+    "vw": 393,
+    "bodyScroll": 393,
+    "navScroll": 375,
+    "navClient": 375,
+    "workerCols": "349px",
+    "workers": 24,
+    "rawEnums": false,
+    "debugLeak": false,
+    "activeNav": "Übersicht",
+    "filterText": "24/24 shown",
+    "navBoxes": [
+      {
+        "left": 13,
+        "right": 84,
+        "width": 71
+      },
+      {
+        "left": 87,
+        "right": 158,
+        "width": 71
+      },
+      {
+        "left": 161,
+        "right": 232,
+        "width": 71
+      },
+      {
+        "left": 235,
+        "right": 306,
+        "width": 71
+      },
+      {
+        "left": 309,
+        "right": 380,
+        "width": 71
+      }
+    ],
+    "navContained": true
+  },
+  "iphone-wide-430x932": {
+    "vw": 430,
+    "bodyScroll": 430,
+    "navScroll": 412,
+    "navClient": 412,
+    "workerCols": "386px",
+    "workers": 24,
+    "rawEnums": false,
+    "debugLeak": false,
+    "activeNav": "Übersicht",
+    "filterText": "24/24 shown",
+    "navBoxes": [
+      {
+        "left": 13,
+        "right": 91.390625,
+        "width": 78.390625
+      },
+      {
+        "left": 94.390625,
+        "right": 172.796875,
+        "width": 78.40625
+      },
+      {
+        "left": 175.796875,
+        "right": 254.1875,
+        "width": 78.390625
+      },
+      {
+        "left": 257.1875,
+        "right": 335.59375,
+        "width": 78.40625
+      },
+      {
+        "left": 338.59375,
+        "right": 417,
+        "width": 78.40625
+      }
+    ],
+    "navContained": true
+  },
+  "interactions": {
+    "initialWorkers": 24,
+    "actionWorkers": 3,
+    "problemWorkers": 11,
+    "searchWorkers": 1,
+    "frames": 7,
+    "activeNavAfterClick": "Worker",
+    "expandedEvidence": true,
+    "uncertainAttention": true,
+    "staleAttention": true,
+    "staleBadges": 6,
+    "degradedState": "Degraded",
+    "reconnectState": "Reconnecting"
+  },
+  "reducedMotion": {
+    "transition": "0s",
+    "scroll": "auto"
+  },
+  "large": {
+    "vw": 1440,
+    "bodyScroll": 1440,
+    "workers": 80,
+    "evidence": 80,
+    "events": 80,
+    "wakes": 40,
+    "graphNodes": 19,
+    "nodes": 4171,
+    "workerNote": "100 weitere Worker im Ledger — DOM bewusst begrenzt.",
+    "eventNote": "820 weitere Events im Ledger — DOM bewusst begrenzt.",
+    "graphNote": "Graph zeigt 18/36 Child-Goals; vollständiger Zustand bleibt im Ledger."
+  },
+  "idempotent": {
+    "sameNode": true,
+    "before": 4171,
+    "after": 4171
+  },
+  "churn": {
+    "iterations": 72,
+    "largeNodeCounts": [
+      4171,
+      4171,
+      4171,
+      4171,
+      4171,
+      4171,
+      4171,
+      4171,
+      4171,
+      4171,
+      4171,
+      4171,
+      4171,
+      4171,
+      4171,
+      4171,
+      4171,
+      4171,
+      4171,
+      4171,
+      4171,
+      4171,
+      4171,
+      4171,
+      4171,
+      4171,
+      4171,
+      4171,
+      4171,
+      4171,
+      4171,
+      4171,
+      4171,
+      4171,
+      4171,
+      4171
+    ],
+    "largeStable": true,
+    "maxNodes": 4171
+  },
+  "consoleErrors": [],
+  "pageErrors": []
+}

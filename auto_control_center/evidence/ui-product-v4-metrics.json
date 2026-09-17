@@ -1,0 +1,90 @@
+{
+  "desktop-1440x1100": {
+    "vw": 1440,
+    "bodyScroll": 1440,
+    "workerCols": "451.328px 451.328px 451.344px",
+    "heroCols": "888.312px 499.688px",
+    "navScroll": 1412,
+    "navClient": 1412,
+    "workers": 24,
+    "attention": 6,
+    "workerSectionTop": 579,
+    "masterHeight": 196,
+    "attentionHeight": 367,
+    "connection": "● LIVE · Read-only",
+    "debugLeak": false
+  },
+  "iphone-393x852": {
+    "vw": 393,
+    "bodyScroll": 393,
+    "workerCols": "349px",
+    "heroCols": "373px",
+    "navScroll": 393,
+    "navClient": 393,
+    "workers": 24,
+    "attention": 6,
+    "workerSectionTop": 705,
+    "masterHeight": 195,
+    "attentionHeight": 319,
+    "connection": "● LIVE · Read-only",
+    "debugLeak": false
+  },
+  "iphone-wide-430x932": {
+    "vw": 430,
+    "bodyScroll": 430,
+    "workerCols": "386px",
+    "heroCols": "410px",
+    "navScroll": 430,
+    "navClient": 430,
+    "workers": 24,
+    "attention": 6,
+    "workerSectionTop": 705,
+    "masterHeight": 195,
+    "attentionHeight": 319,
+    "connection": "● LIVE · Read-only",
+    "debugLeak": false
+  },
+  "large": {
+    "vw": 1440,
+    "bodyScroll": 1440,
+    "workers": 80,
+    "events": 80,
+    "evidence": 80,
+    "wakes": 40,
+    "graphNodes": 19,
+    "workerNote": "100 weitere Worker im Ledger — DOM bewusst begrenzt.",
+    "eventNote": "820 weitere Events im Ledger — DOM bewusst begrenzt.",
+    "graphNote": "Graph zeigt 18/36 Child-Goals; vollständiger Zustand bleibt im Ledger."
+  },
+  "idempotent": {
+    "before": 1,
+    "after": 1,
+    "unchanged": true
+  },
+  "churn": {
+    "iterations": 72,
+    "largeNodeCounts": [
+      3743,
+      3743,
+      3743,
+      3743,
+      3743,
+      3743,
+      3743,
+      3743,
+      3743,
+      3743,
+      3743,
+      3743
+    ],
+    "largeStable": true,
+    "maxNodes": 3743
+  },
+  "truthful": {
+    "degraded": "● DEGRADED · Read-only",
+    "reconnect": "● Reconnecting · letzte Ansicht",
+    "empty": "Keine Worker registriert.\nDer aktuelle Ledger enthält keine Worker-Zeilen.",
+    "staleBadges": 6
+  },
+  "focusOutline": "solid"
+}

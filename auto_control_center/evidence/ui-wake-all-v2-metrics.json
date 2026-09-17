@@ -1,0 +1,52 @@
+{
+  "viewports": {
+    "desktop-1440x1100": {
+      "vw": 1440,
+      "bodyScroll": 1440,
+      "buttonVisible": true,
+      "workerCols": "453.328px 453.328px 453.344px",
+      "navScroll": 1412,
+      "navClient": 1412
+    },
+    "iphone-393x852": {
+      "vw": 393,
+      "bodyScroll": 393,
+      "buttonVisible": true,
+      "workerCols": "349px",
+      "navScroll": 375,
+      "navClient": 375
+    },
+    "iphone-wide-430x932": {
+      "vw": 430,
+      "bodyScroll": 430,
+      "buttonVisible": true,
+      "workerCols": "386px",
+      "navScroll": 412,
+      "navClient": 412
+    }
+  },
+  "interactions": {
+    "cancelledWithoutSubmit": true,
+    "submitCountAfterDoubleClick": 1,
+    "confirmDisabledDuringSubmit": true,
+    "resultOutcomes": {
+      "verified": true,
+      "queued": true,
+      "uncertain": true,
+      "blocked": true,
+      "failed-pre-send": true,
+      "skipped": true
+    }
+  },
+  "disabled": {
+    "confirmDisabled": true,
+    "message": "Wake-All ist in dieser lokalen Instanz deaktiviert. Aktivierung erfordert ACC_WAKE_ALL_ENABLED=1 beim loopback-local Start."
+  },
+  "consoleErrors": [],
+  "pageErrors": [],
+  "requests": {
+    "preview": 3,
+    "submit": 2,
+    "result": 2
+  }
+}
