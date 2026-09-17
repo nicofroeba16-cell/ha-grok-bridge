@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import sqlite3
+import subprocess
 import unittest
+from unittest.mock import patch
 
 from worker_orchestrator.browser_wake import (
     MASTER_ROUTE_KEY,
@@ -9,6 +11,7 @@ from worker_orchestrator.browser_wake import (
     BrowserWakeError,
     BrowserWakePreSendError,
     BrowserWakeUncertainError,
+    CommandBrowserSender,
     WakeCoordinator,
 )
 
@@ -133,6 +136,14 @@ class BrowserWakeTests(unittest.TestCase):
         self.assertEqual(len(calls), 3)
         coord.reconcile([{"id": 1, "body": request_body()}], replay_existing=True)
         self.assertEqual(len(calls), 3)
+
+
+    def test_command_sender_outer_timeout_is_uncertain_not_retryable(self):
+        sender = CommandBrowserSender("echo ok")
+        self.assertGreaterEqual(sender.timeout, 300)
+        with patch("worker_orchestrator.browser_wake.subprocess.run", side_effect=subprocess.TimeoutExpired(["echo"], 1)):
+            with self.assertRaises(BrowserWakeUncertainError):
+                sender("m-timeout", WORKER_URL, "wake")
 
     def test_uncertain_delivery_is_never_retried(self):
         calls = []

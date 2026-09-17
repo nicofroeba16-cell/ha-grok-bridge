@@ -13,8 +13,11 @@ class BrowserSenderCompletionContractTests(unittest.TestCase):
         completion = completion.split("// A newly-rendered user turn can be optimistic UI only.", 1)[0]
         self.assertNotIn("sendReady", completion)
         self.assertNotIn("const sendButton", completion)
-        self.assertIn("const composer = document.querySelector", completion)
-        self.assertIn("assistantCount > before && !stop && !!composer", completion)
+        self.assertIn("waitForAssistantCompletion", completion)
+        source = HELPER.read_text()
+        self.assertIn("async function waitForPersistedUserTurn", source)
+        self.assertIn("timeoutMs = 60000", source)
+        self.assertIn("transient ChatGPT redirects/navigation context changes", source)
 
 
 if __name__ == "__main__":
