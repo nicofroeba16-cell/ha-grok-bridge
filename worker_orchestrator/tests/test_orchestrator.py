@@ -193,7 +193,68 @@ class Harness(unittest.TestCase):
         self.registry.set_state(ready.key, LifecycleState.READY)
         keys = {row["worker_key"] for row in self.registry.list_dispatchable()}
         self.assertNotIn(blocked.key, keys)
-        self.assertIn(ready.key, keys)
+        self.assertNotIn(ready.key, keys)
+
+    def test_ready_worker_is_dormant_until_material_goal_change(self):
+        g = self.goal(project="Bridge", chat="Dormant Ready")
+        self.registry.upsert_goal(g)
+        self.registry.set_state(g.key, LifecycleState.READY, execution_count=17)
+        self.assertEqual(self.registry.list_dispatchable(), [])
+        changed = self.goal(
+            project="Bridge", chat="Dormant Ready", prompt="material v2"
+        )
+        was_changed, row = self.registry.upsert_goal(changed)
+        self.assertTrue(was_changed)
+        self.assertEqual(row["state"], LifecycleState.ASSIGNED)
+        self.assertEqual(
+            [x["worker_key"] for x in self.registry.list_dispatchable()], [g.key]
+        )
+
+    def test_stale_ci_blocker_reconciles_to_done_without_worker_respawn(self):
+        ci_criterion = "branch HEAD is exact with GREEN exact-head CI"
+        g = self.goal(
+            project="Master Autonomous Orchestration",
+            chat="Control Plane E2E",
+            done_criteria=("README verified", ci_criterion, "workspace unchanged"),
+        )
+        worker = ScriptedWorker([WorkerResult()])
+        engine = self.engine(worker, ci_verifier=lambda repo, head: "GREEN")
+        self.registry.upsert_goal(g)
+        self.registry.set_state(
+            g.key,
+            LifecycleState.BLOCKED,
+            last_head="abc123",
+            ci_status="UNKNOWN",
+            blockers=[
+                "GitHub API unavailable; GREEN exact-head CI could not be verified"
+            ],
+            verified_criteria=["README verified", "workspace unchanged"],
+            completion_evidence={"local_tests": "green"},
+            execution_count=1,
+        )
+        self.assertEqual(engine.reconcile_external_blockers(), 1)
+        row = self.registry.get(g.key)
+        self.assertEqual(row["state"], LifecycleState.DONE)
+        self.assertEqual(row["ci_status"], "GREEN")
+        self.assertEqual(row["execution_count"], 1)
+        self.assertEqual(worker.calls, 0)
+        self.assertIn(ci_criterion, json.loads(row["verified_criteria"]))
+
+    def test_non_ci_blocker_is_not_auto_cleared(self):
+        g = self.goal(project="Blocked", chat="Real blocker")
+        engine = self.engine(
+            ScriptedWorker([WorkerResult()]),
+            ci_verifier=lambda repo, head: "GREEN",
+        )
+        self.registry.upsert_goal(g)
+        self.registry.set_state(
+            g.key,
+            LifecycleState.BLOCKED,
+            last_head="abc123",
+            blockers=["runtime filesystem is read-only"],
+        )
+        self.assertEqual(engine.reconcile_external_blockers(), 0)
+        self.assertEqual(self.registry.get(g.key)["state"], LifecycleState.BLOCKED)
 
     def test_restart_recovers_running_worker(self):
         g = self.goal()

@@ -31,7 +31,7 @@ SQLite/WAL stores:
 - recovery counters and worker session state
 - writer locks and audit events
 
-A process restart converts an interrupted RUNNING worker back to ASSIGNED for safe reconciliation. DONE, WAITING_FOR_USER and STALLED remain dormant until a materially changed goal is ingested.
+A process restart converts an interrupted RUNNING worker back to ASSIGNED for safe reconciliation. READY, DONE, WAITING_FOR_USER and STALLED remain dormant until a materially changed goal is ingested. BLOCKED workers also remain dormant for worker execution; retryable external CI-verification blockers are rechecked during reconciliation without spawning a worker, and a newly GREEN exact-head check can complete the stored goal directly or re-assign it once if technical criteria still remain.
 
 ## Assignment format
 

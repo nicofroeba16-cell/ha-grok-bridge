@@ -142,12 +142,12 @@ class Registry:
         return self.conn.execute("SELECT * FROM workers WHERE worker_key=?", (worker_key,)).fetchone()
 
     def list_dispatchable(self):
-        # BLOCKED is dormant for worker execution. Retryable documentation drift
-        # is reconciled independently by Orchestrator.reconcile_documentation(),
-        # so a blocked worker must not spawn a fresh Codex job every poll.
+        # Only newly/materially assigned goals may spawn workers. READY is a
+        # stable handoff state and remains dormant until Master changes the
+        # goal. BLOCKED is reconciled separately without worker respawn.
         return self.conn.execute(
-            "SELECT * FROM workers WHERE state IN (?, ?) ORDER BY updated_at",
-            (LifecycleState.ASSIGNED, LifecycleState.READY),
+            "SELECT * FROM workers WHERE state=? ORDER BY updated_at",
+            (LifecycleState.ASSIGNED,),
         ).fetchall()
 
     def list_all(self):

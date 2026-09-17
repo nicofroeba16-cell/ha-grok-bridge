@@ -138,11 +138,7 @@ class Orchestrator:
             if result.error.startswith("WORKSPACE_") and result.error != "WORKSPACE_PREP_FAILED":
                 result.error = "WORKSPACE_PREP_FAILED"
                 result.blockers = tuple(dict.fromkeys(("WORKSPACE_PREP_FAILED", *result.blockers)))
-            if self.ci_verifier and result.head:
-                try:
-                    result.ci = self.ci_verifier(goal.repository, result.head)
-                except Exception:
-                    result.ci = "UNKNOWN"
+            self._apply_ci_evidence(goal, result)
             try:
                 return self._evaluate(goal, result)
             except Exception as exc:
@@ -161,6 +157,117 @@ class Orchestrator:
                 return LifecycleState.BLOCKED
         finally:
             self.registry.release_lock(goal.key)
+
+    @staticmethod
+    def _is_retryable_ci_blocker(value: str) -> bool:
+        text = (value or "").strip().lower()
+        if not text:
+            return False
+        markers = (
+            "github api unavailable",
+            "ci could not be verified",
+            "exact-head ci could not be verified",
+            "unable to verify ci",
+            "ci verification unavailable",
+        )
+        return any(marker in text for marker in markers)
+
+    @staticmethod
+    def _ci_done_criteria(goal: Goal) -> tuple[str, ...]:
+        return tuple(
+            criterion for criterion in goal.done_criteria
+            if "ci" in criterion.lower() and any(
+                marker in criterion.lower()
+                for marker in ("green", "success", "pass", "exact-head")
+            )
+        )
+
+    def _apply_ci_evidence(self, goal: Goal, result: WorkerResult) -> str:
+        if not self.ci_verifier or not result.head:
+            return result.ci
+        try:
+            status = self.ci_verifier(goal.repository, result.head)
+        except Exception:
+            status = "UNKNOWN"
+        result.ci = status
+        if status.upper() not in {"GREEN", "SUCCESS", "PASS", "PASSED"}:
+            return status
+        result.verified_criteria = tuple(dict.fromkeys((
+            *result.verified_criteria, *self._ci_done_criteria(goal),
+        )))
+        result.blockers = tuple(
+            blocker for blocker in result.blockers
+            if not self._is_retryable_ci_blocker(blocker)
+        )
+        if self._is_retryable_ci_blocker(result.error):
+            result.error = ""
+        return status
+
+    def reconcile_external_blockers(self) -> int:
+        """Re-evaluate retryable external blockers without spawning workers."""
+        if not self.ci_verifier:
+            return 0
+        reconciled = 0
+        for row in self.registry.list_all():
+            if row["state"] != LifecycleState.BLOCKED or not row["last_head"]:
+                continue
+            blockers = list(json.loads(row["blockers"] or "[]"))
+            if not blockers or not any(self._is_retryable_ci_blocker(x) for x in blockers):
+                continue
+            if any(not self._is_retryable_ci_blocker(x) for x in blockers):
+                continue
+            goal = Goal(
+                project=row["project"], chat=row["chat"], repository=row["repository"],
+                branch=row["branch"], prompt=row["prompt"],
+                done_criteria=tuple(json.loads(row["done_criteria"])),
+                workstream_issue=row["workstream_issue"], explicit_version=row["goal_version"],
+                files=tuple(json.loads(row["files"])), scope=row["scope"],
+                approved_actions=tuple(json.loads(row["approved_actions"])),
+                source_comment_id=row["source_comment_id"],
+            )
+            result = WorkerResult(
+                head=row["last_head"], ci=row["ci_status"],
+                verified_criteria=tuple(json.loads(row["verified_criteria"] or "[]")),
+                blockers=tuple(blockers),
+                evidence=json.loads(row["completion_evidence"] or "{}"),
+                progress=row["last_progress"],
+            )
+            status = self._apply_ci_evidence(goal, result)
+            if status.upper() not in {"GREEN", "SUCCESS", "PASS", "PASSED"}:
+                if status != row["ci_status"]:
+                    self.registry.set_state(
+                        goal.key, LifecycleState.BLOCKED, ci_status=status
+                    )
+                continue
+
+            required = set(goal.done_criteria)
+            verified = set(result.verified_criteria)
+            if required and required.issubset(verified) and not result.blockers:
+                self._evaluate(goal, result)
+            elif not result.blockers:
+                self.registry.set_state(
+                    goal.key, LifecycleState.ASSIGNED,
+                    ci_status=result.ci, blockers=[], error_signature="",
+                    verified_criteria=sorted(verified),
+                    last_progress="External CI blocker cleared; remaining work re-assigned once.",
+                )
+                self.registry.record_event(
+                    goal.key, goal.version, "EXTERNAL_BLOCKER_CLEARED",
+                    {"ci": result.ci, "head": result.head},
+                )
+                self._report("WORKER_STATUS", goal, {
+                    "state": LifecycleState.ASSIGNED,
+                    "head": result.head,
+                    "ci": result.ci,
+                    "done": f"{len(verified.intersection(required))}/{len(required)}",
+                    "blockers": [],
+                    "user_action_required": [],
+                    "last_progress": "External CI blocker cleared; remaining work re-assigned once.",
+                    "next": "dispatch",
+                    "evidence": result.evidence,
+                })
+            reconciled += 1
+        return reconciled
 
     def _evaluate(self, goal: Goal, result: WorkerResult) -> LifecycleState:
         row = self.registry.get(goal.key)

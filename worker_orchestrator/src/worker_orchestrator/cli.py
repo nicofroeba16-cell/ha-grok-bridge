@@ -105,6 +105,8 @@ def reconcile(
                         destinations[target] = read_issue(*target)
             engine.reconcile_documentation(items, destinations, (master_repo, master_issue))
         engine.ingest_items(items)
+        if hasattr(engine, "reconcile_external_blockers"):
+            engine.reconcile_external_blockers()
         rows = [row for row in engine.registry.list_dispatchable()
                 if row["worker_key"] not in getattr(engine, "documentation_reconciled_keys", set())]
     except Exception:
