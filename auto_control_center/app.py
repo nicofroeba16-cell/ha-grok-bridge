@@ -4,7 +4,7 @@ import asyncio
 import json
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, StreamingResponse
 
 from . import __version__
@@ -19,6 +19,16 @@ app = FastAPI(
     docs_url="/api/docs",
     redoc_url=None,
 )
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Content-Security-Policy"] = "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'"
+    return response
 
 
 @app.get("/")
@@ -56,10 +66,7 @@ def events(limit: int = 80) -> list[dict]:
 
 @app.get("/api/wakes")
 def wakes(limit: int = 100) -> dict:
-    return {
-        "deliveries": data.wake_deliveries(limit),
-        "queues": data.wake_queues(),
-    }
+    return {"deliveries": data.wake_deliveries(limit), "queues": data.wake_queues()}
 
 
 @app.get("/api/routes")
@@ -72,19 +79,23 @@ def master() -> dict | None:
     return data.latest_master()
 
 
+@app.get("/api/evidence")
+def evidence() -> list[dict]:
+    return data.evidence_overview()
+
+
 @app.get("/api/stream")
 async def stream() -> StreamingResponse:
     async def event_source():
         while True:
             payload = data.dashboard()
+            payload["version"] = __version__
+            payload["mode"] = "read-only"
             yield f"event: dashboard\ndata: {json.dumps(payload, separators=(',', ':'))}\n\n"
             await asyncio.sleep(3)
 
     return StreamingResponse(
         event_source(),
         media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-        },
+        headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
     )
