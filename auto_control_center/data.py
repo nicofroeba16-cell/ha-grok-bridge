@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .security import sanitize
-from .state import evidence_for_worker, resolve_worker
+from .state import annotate_registry_aliases, evidence_for_worker, resolve_worker, wake_class
 
 ORCHESTRATOR_DB = Path(os.environ.get("ACC_ORCHESTRATOR_DB", "~/.local/share/worker-orchestrator/state.sqlite3")).expanduser()
 BROWSER_WAKE_DB = Path(os.environ.get("ACC_BROWSER_WAKE_DB", "~/.local/share/browser-wake/state/browser-wake.sqlite3")).expanduser()
@@ -75,7 +75,8 @@ def workers() -> list[dict[str, Any]]:
                   last_progress,verified_criteria,done_criteria,updated_at
              FROM workers ORDER BY updated_at DESC, worker_key""",
     )
-    return [resolve_worker(sanitize(row)) for row in rows]
+    resolved = [resolve_worker(sanitize(row)) for row in rows]
+    return annotate_registry_aliases(resolved)
 
 
 def orchestrator_events(limit: int = 80) -> list[dict[str, Any]]:
@@ -127,7 +128,10 @@ def wake_deliveries(limit: int = 100) -> list[dict[str, Any]]:
              FROM browser_wake_delivery ORDER BY updated_at DESC LIMIT ?""",
         (limit,),
     )
-    return sanitize(rows)
+    result = sanitize(rows)
+    for row in result:
+        row["status_class"] = wake_class(row.get("status"))
+    return result
 
 
 def wake_queues() -> dict[str, int]:
@@ -221,6 +225,15 @@ def evidence_overview(worker_rows: list[dict[str, Any]] | None = None) -> list[d
     return [evidence_for_worker(row) for row in rows]
 
 
+def _registry_shared_target_groups(worker_rows: list[dict[str, Any]]) -> int:
+    groups = {
+        (row.get("repository"), row.get("branch"), row.get("goal_version"))
+        for row in worker_rows
+        if row.get("registry_shared_target")
+    }
+    return len(groups)
+
+
 def dashboard() -> dict[str, Any]:
     worker_rows = workers()
     wake_rows = wake_deliveries()
@@ -240,7 +253,8 @@ def dashboard() -> dict[str, Any]:
             "workers": len(worker_rows),
             "running": sum(1 for row in worker_rows if row.get("resolved_state") == "RUNNING"),
             "blocked": sum(1 for row in worker_rows if row.get("resolved_state") in {"BLOCKED", "STALLED", "WAITING_FOR_USER"}),
-            "wake_uncertain": sum(1 for row in wake_rows if str(row.get("status") or "").upper() == "UNCERTAIN"),
+            "wake_uncertain": sum(1 for row in wake_rows if row.get("status_class") == "uncertain"),
             "ci_red": sum(1 for row in evidence if row.get("ci_class") == "red"),
+            "registry_shared_targets": _registry_shared_target_groups(worker_rows),
         },
     }
