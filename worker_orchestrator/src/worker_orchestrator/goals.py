@@ -63,8 +63,16 @@ def parse_goal_text(text: str, *, source_comment_id: int | None = None) -> Goal 
             fields[_normalize_field(match.group(1))] = match.group(2).strip()
 
     canonical_project, canonical_chat = _canonical_identifier(text)
-    project = canonical_project or fields.get("PROJECT") or fields.get("PROJEKT") or ""
-    chat = canonical_chat or fields.get("CHAT") or ""
+    field_project = fields.get("PROJECT") or fields.get("PROJEKT") or ""
+    field_chat = fields.get("CHAT") or ""
+    # Explicit headers identify the assignment. A goal body may legitimately
+    # mention another exact Projekt → Chat route, which must not take over the
+    # assignment's own identity.
+    if field_project and field_chat:
+        project, chat = field_project, field_chat
+    else:
+        project = canonical_project or field_project
+        chat = canonical_chat or field_chat
     repository = fields.get("REPOSITORY") or fields.get("REPO") or ""
     branch = fields.get("BRANCH", "")
     done = _criteria(lines)
