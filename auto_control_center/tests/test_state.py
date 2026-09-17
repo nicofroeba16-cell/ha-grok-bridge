@@ -1,6 +1,12 @@
 import unittest
 
-from auto_control_center.state import ci_class, evidence_for_worker, resolve_worker
+from auto_control_center.state import (
+    annotate_registry_aliases,
+    ci_class,
+    evidence_for_worker,
+    resolve_worker,
+    wake_class,
+)
 
 
 class StateMappingTests(unittest.TestCase):
@@ -54,6 +60,32 @@ class StateMappingTests(unittest.TestCase):
         self.assertEqual(evidence["verified_criteria"], 1)
         self.assertEqual(evidence["done_criteria"], 2)
         self.assertEqual(evidence["source"], "orchestrator_ledger")
+
+    def test_wake_uncertain_is_not_success_or_failure(self):
+        self.assertEqual(wake_class("DELIVERED"), "green")
+        self.assertEqual(wake_class("FAILED_PRE_SEND"), "red")
+        self.assertEqual(wake_class("BLOCKED"), "red")
+        self.assertEqual(wake_class("UNCERTAIN"), "uncertain")
+        self.assertEqual(wake_class("CANCELLED_SUPERSEDED"), "muted")
+        self.assertEqual(wake_class("new-state"), "unknown")
+
+    def test_shared_target_aliases_are_preserved_without_canonical_inference(self):
+        rows = annotate_registry_aliases(
+            [
+                {"worker_key": "legacy", "repository": "o/r", "branch": "b", "goal_version": "g"},
+                {"worker_key": "current", "repository": "o/r", "branch": "b", "goal_version": "g"},
+                {"worker_key": "other", "repository": "o/r", "branch": "b2", "goal_version": "g2"},
+            ]
+        )
+        by_key = {row["worker_key"]: row for row in rows}
+        self.assertEqual(set(by_key), {"legacy", "current", "other"})
+        self.assertTrue(by_key["legacy"]["registry_shared_target"])
+        self.assertTrue(by_key["current"]["registry_shared_target"])
+        self.assertEqual(by_key["legacy"]["registry_peer_keys"], ["current"])
+        self.assertEqual(by_key["current"]["registry_peer_keys"], ["legacy"])
+        self.assertEqual(by_key["legacy"]["registry_identity_count"], 2)
+        self.assertFalse(by_key["other"]["registry_shared_target"])
+        self.assertNotIn("canonical", by_key["legacy"])
 
 
 if __name__ == "__main__":
