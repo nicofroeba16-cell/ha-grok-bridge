@@ -126,6 +126,7 @@ trap 'rm -f "$dropin_tmp"' EXIT
 printf '%s\n' \
   '[Service]' \
   "EnvironmentFile=$config_dir/master-control.env" \
+  "Environment=PYTHONPATH=$runtime_repo/worker_orchestrator/src" \
   >"$dropin_tmp"
 chmod 600 "$dropin_tmp"
 mv -f "$dropin_tmp" "$dropin_dir/master-control.conf"
@@ -162,13 +163,14 @@ if [[ "$version" != "0.2.0" ]]; then
   exit 1
 fi
 
-"$python_bin" - "$after_pid" <<'PY'
+"$python_bin" - "$after_pid" "$runtime_repo" <<'PY'
 import json
 import os
 import sqlite3
 import sys
 
 pid = sys.argv[1]
+runtime_repo = sys.argv[2]
 raw = open(f"/proc/{pid}/environ", "rb").read().split(b"\0")
 environment = {}
 for entry in raw:
@@ -179,6 +181,8 @@ if environment.get("MASTER_CONTROL_ENABLED") != "true":
     raise SystemExit("MASTER_CONTROL_ENABLED is not effective")
 if environment.get("MASTER_CONTROL_ISSUE") != "9":
     raise SystemExit("MASTER_CONTROL_ISSUE is not effective")
+if environment.get("PYTHONPATH") != os.path.join(runtime_repo, "worker_orchestrator", "src"):
+    raise SystemExit("The durable runtime source is not effective on PYTHONPATH")
 routes = json.loads(environment.get("CHAT_ROUTES_JSON", "{}"))
 key = "Projekt: Master Autonomous Orchestration → Chat: Control Plane E2E"
 if routes != {key: {"transport": "github_master", "destination": "issue:3"}}:
