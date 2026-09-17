@@ -13,6 +13,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Python syntax
         run: python3 -m py_compile ha_grok_bridge/file_bridge.py
+      - name: Exclusion policy tests
+        run: python3 -m unittest discover -s tests -v
       - name: Shell syntax
         run: bash -n ha_grok_bridge/run.sh
       - name: Git whitespace check

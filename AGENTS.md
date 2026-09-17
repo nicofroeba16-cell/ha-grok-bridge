@@ -61,6 +61,11 @@ The bridge excludes, by default:
 - `tts/`
 - `media/`
 - `backups/`
+- local recovery/staging directories: `.firetv-companion-backups/`, `.patch-backups/`, `.patch-stage/`, `.patch-staging/`, `luna-backups/`
+- the nested legacy checkout `ha-grok-bridge/`
+- the historical `/config` prototype `ha-intelligence-suite/` (the canonical add-on source is the separate `Intelligence-Suite-` repository)
+- transient metadata: `.ha_run.lock`, `.hass_configurator_prefs.json`, `.ssh_known_hosts`
+- backup file patterns: `*.bak`, `*.bak-*`, `*.backup`, `*.backup-*`, `*.firetv-*-backup`
 - files ending in `.passphrase`, `.pem`, `.key`, `.p12`, or `.pfx`
 
 The bridge performs secret scanning on deployable text/configuration files. Do not bypass these protections.
