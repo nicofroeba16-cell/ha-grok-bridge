@@ -63,6 +63,27 @@ class ReadOnlyDataTests(unittest.TestCase):
                 "Worker says complete token=super-secret-value",
                 '["adapter"]',
                 '["adapter","api"]',
+                "2026-01-02",
+            ),
+        )
+        conn.execute(
+            "INSERT INTO workers VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "Legacy Worker",
+                "Legacy P",
+                "Legacy Chat",
+                "o/r",
+                "branch",
+                2,
+                "v1",
+                "ASSIGNED",
+                "",
+                "UNKNOWN",
+                "[]",
+                "[]",
+                "Old registry identity",
+                "[]",
+                "[]",
                 "2026-01-01",
             ),
         )
@@ -103,10 +124,23 @@ class ReadOnlyDataTests(unittest.TestCase):
         payload = data.dashboard()
         self.assertEqual(before_orch, self.orch.read_bytes())
         self.assertEqual(before_wake, self.wake.read_bytes())
-        self.assertEqual(payload["workers"][0]["resolved_state"], "WAITING_FOR_USER")
+        workers = {row["worker_key"]: row for row in payload["workers"]}
+        self.assertEqual(workers["Worker"]["resolved_state"], "WAITING_FOR_USER")
         self.assertEqual(payload["master"]["request_id"], "r1")
         self.assertEqual(payload["wakes"][0]["status"], "UNCERTAIN")
+        self.assertEqual(payload["wakes"][0]["status_class"], "uncertain")
         self.assertEqual(payload["stats"]["ci_red"], 1)
+        self.assertEqual(payload["stats"]["registry_shared_targets"], 1)
+
+    def test_registry_drift_keeps_all_worker_rows_visible(self):
+        rows = data.workers()
+        by_key = {row["worker_key"]: row for row in rows}
+        self.assertEqual(set(by_key), {"Worker", "Legacy Worker"})
+        self.assertTrue(by_key["Worker"]["registry_shared_target"])
+        self.assertTrue(by_key["Legacy Worker"]["registry_shared_target"])
+        self.assertEqual(by_key["Worker"]["registry_peer_keys"], ["Legacy Worker"])
+        self.assertEqual(by_key["Legacy Worker"]["registry_peer_keys"], ["Worker"])
+        self.assertEqual(by_key["Worker"]["registry_identity_basis"], "repository+branch+goal_version")
 
     def test_secret_material_is_redacted_from_public_rows(self):
         payload = data.dashboard()
