@@ -57,6 +57,14 @@ function isLikelyShellUrl(raw) {
   if (!raw || raw === "about:blank" || raw.startsWith("devtools://")) return false;
   return !raw.startsWith("http://") && !raw.startsWith("https://");
 }
+function isChatGPTWebviewUrl(raw) {
+  try {
+    const url = new URL(raw);
+    return url.protocol === "https:" && url.hostname === "chatgpt.com";
+  } catch {
+    return false;
+  }
+}
 function isPrimaryDesktopShellUrl(raw) {
   try {
     const url = new URL(raw);
@@ -68,6 +76,17 @@ function isPrimaryDesktopShellUrl(raw) {
 }
 
 async function pickShellPage(browser) {
+  const chatTargets = browser.targets().filter((target) =>
+    target.type() === "webview" && isChatGPTWebviewUrl(target.url())
+  );
+  const chatPages = [];
+  for (const target of chatTargets) {
+    const page = await target.page().catch(() => null);
+    if (page) chatPages.push(page);
+  }
+  if (chatPages.length === 1) return chatPages[0];
+  if (chatPages.length > 1) throw new Error("multiple ChatGPT desktop webviews found");
+
   const pages = await browser.pages();
   const primaries = pages.filter((page) => isPrimaryDesktopShellUrl(page.url()));
   if (primaries.length === 1) return primaries[0];
@@ -127,6 +146,18 @@ async function uniqueSearchInput(page) {
   }
   return matches.length === 1 ? matches[0] : null;
 }
+async function uniqueSearchButton(page) {
+  const handles = await page.$$('button[aria-label="Search"], button[aria-label="Suchen"]');
+  const visible = [];
+  for (const handle of handles) {
+    const yes = await handle.evaluate((el) => {
+      const style = getComputedStyle(el), rect = el.getBoundingClientRect();
+      return !el.disabled && style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
+    });
+    if (yes) visible.push(handle);
+  }
+  return visible.length === 1 ? visible[0] : null;
+}
 async function resolveTitle(page, title) {
   let matches = await exactTitleMatches(page, title);
   if (matches.length === 1) return matches[0];
@@ -136,7 +167,15 @@ async function resolveTitle(page, title) {
   await page.keyboard.press("KeyK");
   await page.keyboard.up(process.platform === "darwin" ? "Meta" : "Control");
   await new Promise((resolve) => setTimeout(resolve, 300));
-  const input = await uniqueSearchInput(page);
+  let input = await uniqueSearchInput(page);
+  if (!input) {
+    const searchButton = await uniqueSearchButton(page);
+    if (searchButton) {
+      await searchButton.click();
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      input = await uniqueSearchInput(page);
+    }
+  }
   if (!input) throw new Error("desktop chat search input not found uniquely");
   await input.click({ clickCount: 3 });
   await page.keyboard.down(process.platform === "darwin" ? "Meta" : "Control");
@@ -196,6 +235,8 @@ function selfTest() {
   assert(parseDestination("chat-title:Alpha").title === "Alpha", "title locator");
   assert(parseDestination("desktop-thread:123e4567-e89b-12d3-a456-426614174000").kind === "thread", "thread locator");
   assert(parseDebugUrl("http://127.0.0.1:9223") === "http://127.0.0.1:9223", "loopback debug URL");
+  assert(isChatGPTWebviewUrl("https://chatgpt.com/") === true, "ChatGPT webview URL");
+  assert(isChatGPTWebviewUrl("app://-/index.html") === false, "desktop shell is not ChatGPT webview");
   assert(isPrimaryDesktopShellUrl("app://-/index.html"), "primary desktop shell URL");
   assert(!isPrimaryDesktopShellUrl("app://-/index.html?initialRoute=%2Favatar-overlay"), "overlay is not primary shell");
   assert(!isPrimaryDesktopShellUrl("app://-/detached-window.html?initialRoute=%2Fdetached-window"), "detached window is not primary shell");
