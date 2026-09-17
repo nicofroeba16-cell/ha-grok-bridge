@@ -275,15 +275,33 @@ async function main() {
     const disabled = await send.evaluate((el) => el.disabled || el.getAttribute('aria-disabled') === 'true');
     if (disabled) throw new Error('ChatGPT send button is disabled');
 
+    const expectedPayload = normalizeText(request.payload);
+    const matchingUserTurnsBefore = await page.evaluate((expected) => {
+      const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+      return [...document.querySelectorAll('[data-message-author-role="user"]')]
+        .filter((turn) => normalize(turn.innerText || turn.textContent || '').includes(expected)).length;
+    }, expectedPayload);
+
     // From this point onward a process interruption is delivery-uncertain.
     // The Python ledger deliberately never retries uncertain sends automatically.
     sendCommitted = true;
     await send.click();
-    await new Promise((resolve) => setTimeout(resolve, 750));
+
+    try {
+      await page.waitForFunction(({ expected, before }) => {
+        const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+        const matches = [...document.querySelectorAll('[data-message-author-role="user"]')]
+          .filter((turn) => normalize(turn.innerText || turn.textContent || '').includes(expected)).length;
+        return matches > before;
+      }, { timeout: 12000, polling: 200 }, { expected: expectedPayload, before: matchingUserTurnsBefore });
+    } catch (_) {
+      throw new Error('post-send delivery could not be verified in ChatGPT conversation');
+    }
 
     process.stdout.write(JSON.stringify({
       status: 'sent',
       message_id: request.messageId,
+      delivery_verified: true,
       output_scraped: false,
     }) + '\n');
   } catch (error) {
