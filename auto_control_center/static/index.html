@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>AUTO Control Center</title>
+<style>
+:root{color-scheme:dark;--bg:#07090d;--panel:#10141b;--panel2:#151b24;--line:#242d3a;--text:#f5f7fb;--muted:#95a2b6;--good:#52d273;--warn:#ffb545;--bad:#ff6767;--blue:#6ca8ff;--violet:#9b87ff;--shadow:0 18px 50px rgba(0,0,0,.34)}
+*{box-sizing:border-box}body{margin:0;font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:radial-gradient(circle at 10% 0%,#162034 0,transparent 32%),radial-gradient(circle at 90% 0%,#201c3d 0,transparent 28%),var(--bg);color:var(--text)}
+.shell{max-width:1500px;margin:auto;padding:22px}.topbar{display:flex;justify-content:space-between;align-items:center;gap:16px;margin-bottom:18px}.brand{display:flex;align-items:center;gap:12px}.logo{width:42px;height:42px;border-radius:13px;background:linear-gradient(145deg,var(--blue),var(--violet));display:grid;place-items:center;font-weight:800;box-shadow:var(--shadow)}h1{font-size:21px;margin:0}.sub{color:var(--muted);font-size:12px}.pill{border:1px solid var(--line);border-radius:999px;padding:7px 11px;background:#0d1118;color:var(--muted);white-space:nowrap}.grid{display:grid;gap:14px}.hero{grid-template-columns:2fr 1fr}.cards{grid-template-columns:repeat(4,1fr)}.main{grid-template-columns:1.25fr .75fr}.panel{background:linear-gradient(180deg,rgba(20,26,36,.97),rgba(13,17,24,.97));border:1px solid var(--line);border-radius:18px;padding:16px;box-shadow:var(--shadow)}.panel h2{font-size:14px;margin:0 0 12px;color:#dce5f4}.goal-title{font-size:22px;font-weight:760;margin:2px 0 8px}.meta{display:flex;flex-wrap:wrap;gap:8px}.badge{font-size:11px;font-weight:700;border-radius:999px;padding:4px 8px;border:1px solid var(--line);background:#0b0f15}.state-DONE,.ok{color:var(--good)}.state-RUNNING,.state-ASSIGNED{color:var(--blue)}.state-BLOCKED,.state-STALLED,.state-WAITING_FOR_USER,.bad{color:var(--bad)}.state-READY{color:var(--violet)}.warn{color:var(--warn)}.progress{height:8px;background:#080b10;border-radius:99px;overflow:hidden;margin-top:14px}.progress>span{display:block;height:100%;background:linear-gradient(90deg,var(--blue),var(--violet));border-radius:99px}.stat{padding:14px}.stat strong{font-size:25px;display:block}.stat span{color:var(--muted);font-size:12px}.workers{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}.worker{border:1px solid var(--line);background:#0d1219;border-radius:14px;padding:13px}.worker-head{display:flex;align-items:flex-start;justify-content:space-between;gap:8px}.worker-name{font-weight:700}.worker-key{color:var(--muted);font-size:11px;margin-top:2px;word-break:break-word}.worker p{color:#cbd5e5;margin:9px 0 0;font-size:12px}.kv{display:grid;grid-template-columns:92px 1fr;gap:5px 10px;margin-top:10px;font-size:11px}.kv b{color:var(--muted);font-weight:500}.kv span{overflow-wrap:anywhere}.timeline{display:flex;flex-direction:column;gap:8px;max-height:620px;overflow:auto}.event{border-left:2px solid var(--line);padding:6px 0 6px 10px}.event-type{font-size:11px;font-weight:750}.event small{display:block;color:var(--muted);margin-top:2px}.children{display:flex;flex-wrap:wrap;gap:9px;margin-top:13px}.child{min-width:160px;flex:1;border:1px solid var(--line);background:#0b0f15;border-radius:12px;padding:10px}.service{display:flex;justify-content:space-between;border-bottom:1px solid var(--line);padding:8px 0}.service:last-child{border:0}.routes{max-height:260px;overflow:auto}.route{font-size:11px;color:var(--muted);padding:5px 0;border-bottom:1px solid rgba(255,255,255,.05)}.route:last-child{border:0}.empty{color:var(--muted);padding:10px 0}.footer{color:var(--muted);font-size:11px;text-align:center;padding:18px}.dot{display:inline-block;width:8px;height:8px;border-radius:99px;background:var(--muted);margin-right:6px}.dot.good{background:var(--good)}.dot.bad{background:var(--bad)}
+@media(max-width:1000px){.hero,.main{grid-template-columns:1fr}.cards{grid-template-columns:repeat(2,1fr)}}@media(max-width:650px){.shell{padding:14px}.workers{grid-template-columns:1fr}.cards{grid-template-columns:repeat(2,1fr)}.topbar{align-items:flex-start}.goal-title{font-size:18px}}
+</style>
+</head>
+<body>
+<div class="shell">
+  <div class="topbar"><div class="brand"><div class="logo">A</div><div><h1>AUTO Control Center</h1><div class="sub">Master · Orchestrator · Browser Wake · Evidence</div></div></div><div id="connection" class="pill">● Verbinde…</div></div>
+  <section class="grid hero">
+    <div class="panel"><h2>Aktuelles Master Goal</h2><div id="master"></div></div>
+    <div class="panel"><h2>System Health</h2><div id="services"></div></div>
+  </section>
+  <section class="grid cards" style="margin-top:14px">
+    <div class="panel stat"><strong id="statWorkers">0</strong><span>Auto Worker</span></div>
+    <div class="panel stat"><strong id="statRunning">0</strong><span>Aktiv / Running</span></div>
+    <div class="panel stat"><strong id="statBlocked">0</strong><span>Blockiert / Gate</span></div>
+    <div class="panel stat"><strong id="statWake">0</strong><span>Unklare Wakes</span></div>
+  </section>
+  <section class="grid main" style="margin-top:14px">
+    <div class="panel"><h2>Auto Worker</h2><div id="workers" class="workers"></div></div>
+    <div class="panel"><h2>Event Timeline</h2><div id="events" class="timeline"></div></div>
+  </section>
+  <section class="grid main" style="margin-top:14px">
+    <div class="panel"><h2>Browser Wake</h2><div id="wakes"></div></div>
+    <div class="panel"><h2>Routing</h2><div id="routes" class="routes"></div></div>
+  </section>
+  <div class="footer">READ-ONLY MVP · keine Mutation-, Merge-, Restart- oder Deploy-Aktionen in dieser Version</div>
+</div>
+<script>
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const state=s=>`<span class="badge state-${esc(s)}">${esc(s||'UNKNOWN')}</span>`;
+const short=s=>s?esc(String(s).slice(0,10)):'—';
+function render(d){
+  document.getElementById('statWorkers').textContent=d.stats?.workers??0;document.getElementById('statRunning').textContent=d.stats?.running??0;document.getElementById('statBlocked').textContent=d.stats?.blocked??0;document.getElementById('statWake').textContent=d.stats?.wake_uncertain??0;
+  const m=d.master;if(!m){master.innerHTML='<div class="empty">Kein Master-Request in der Orchestrator-DB.</div>'}else{const p=m.progress||{done:0,total:0,percent:0};master.innerHTML=`<div class="goal-title">${esc(m.request_text||m.request_id)}</div><div class="meta">${state(m.state)}<span class="badge">${esc(m.version)}</span><span class="badge">${p.done}/${p.total} DONE</span></div><div class="progress"><span style="width:${p.percent}%"></span></div><div class="children">${(m.children||[]).map(c=>`<div class="child"><div><b>${esc(c.child_id)}</b></div><div style="margin-top:6px">${state(c.state)}</div><div class="worker-key">${esc(c.worker_key)}</div>${c.blocker?`<p class="bad">${esc(c.blocker)}</p>`:''}</div>`).join('')}</div>`}
+  services.innerHTML=(d.services||[]).map(s=>`<div class="service"><span>${esc(s.name)}</span><span class="${s.active==='active'?'ok':'bad'}"><i class="dot ${s.active==='active'?'good':'bad'}"></i>${esc(s.active)}/${esc(s.sub)}</span></div>`).join('')||'<div class="empty">Keine Service-Daten.</div>';
+  workers.innerHTML=(d.workers||[]).map(w=>`<article class="worker"><div class="worker-head"><div><div class="worker-name">${esc(w.chat||w.worker_key)}</div><div class="worker-key">${esc(w.worker_key)}</div></div>${state(w.state)}</div><p>${esc(w.last_progress||'Keine aktuelle Fortschrittsmeldung.')}</p><div class="kv"><b>Goal</b><span>${esc(w.goal_version)}</span><b>Repo</b><span>${esc(w.repository)}</span><b>Branch</b><span>${esc(w.branch)}</span><b>HEAD</b><span>${short(w.last_head)}</span><b>CI</b><span>${esc(w.ci_status)}</span>${(w.blockers||[]).length?`<b>Blocker</b><span class="bad">${esc((w.blockers||[]).join(', '))}</span>`:''}</div></article>`).join('')||'<div class="empty">Keine Worker registriert.</div>';
+  events.innerHTML=(d.events||[]).map(e=>`<div class="event"><div class="event-type">${esc(e.event_type)}</div><div class="worker-key">${esc(e.worker_key)}</div><small>${esc(e.created_at)} · ${esc(e.goal_version)}</small></div>`).join('')||'<div class="empty">Keine Events.</div>';
+  const q=d.wake_queues||{};wakes.innerHTML=`<div class="meta"><span class="badge">Worker Queue ${q.workers??0}</span><span class="badge">Master Queue ${q.master??0}</span></div><div style="margin-top:10px">${(d.wakes||[]).slice(0,12).map(w=>`<div class="service"><span class="worker-key">${esc(w.route_key)}</span><span class="state-${esc(w.status)}">${esc(w.status)} · ${esc(w.attempts)}</span></div>`).join('')||'<div class="empty">Keine Wake-Historie.</div>'}</div>`;
+  routes.innerHTML=(d.routes||[]).map(r=>`<div class="route"><span class="dot ${r.bound?'good':'bad'}"></span>${esc(r.worker_key)} · ${esc(r.destination_kind)}</div>`).join('')||'<div class="empty">Keine Routen.</div>';
+}
+async function initial(){try{const r=await fetch('/api/dashboard',{cache:'no-store'});render(await r.json());connection.textContent='● LIVE · Read-only';connection.className='pill ok'}catch(e){connection.textContent='● Offline';connection.className='pill bad'}}
+initial();const es=new EventSource('/api/stream');es.addEventListener('dashboard',e=>{render(JSON.parse(e.data));connection.textContent='● LIVE · Read-only';connection.className='pill ok'});es.onerror=()=>{connection.textContent='● Reconnecting…';connection.className='pill warn'};
+</script>
+</body>
+</html>
