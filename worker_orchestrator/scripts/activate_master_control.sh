@@ -194,6 +194,8 @@ if not db and "--db" in cmdline:
     db = cmdline[cmdline.index("--db") + 1]
 if not db:
     db = os.path.join(os.readlink(f"/proc/{pid}/cwd"), "worker-orchestrator.sqlite3")
+elif not os.path.isabs(db):
+    db = os.path.join(os.readlink(f"/proc/{pid}/cwd"), db)
 connection = sqlite3.connect(db)
 tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
 required = {"workers", "events", "locks", "master_requests", "master_children", "master_audit", "master_meta"}
