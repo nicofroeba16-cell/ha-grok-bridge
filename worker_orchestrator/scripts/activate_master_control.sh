@@ -18,7 +18,12 @@ fi
 
 systemctl --user is-enabled --quiet "$service_name"
 exec_start="$(systemctl --user show "$service_name" --property=ExecStart --value)"
-worker_bin="$(grep -oE '/[^ ;"]*/worker-orchestrator' <<<"$exec_start" | tail -n 1 || true)"
+worker_bin=""
+while IFS= read -r candidate; do
+  if [[ -f "$candidate" && -x "$candidate" && "$(basename "$candidate")" == "worker-orchestrator" ]]; then
+    worker_bin="$candidate"
+  fi
+done < <(grep -oE '/[^ ;"]+' <<<"$exec_start" || true)
 if [[ -z "$worker_bin" ]]; then
   worker_bin="$(sed -nE 's/.*path=([^ ;]+).*/\1/p' <<<"$exec_start")"
 fi
