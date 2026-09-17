@@ -27,6 +27,9 @@ class BrowserServiceContractTests(unittest.TestCase):
         self.assertIn("Requires=browser-wake-chrome.service", unit)
         self.assertIn("browser_chatgpt_health.mjs --wait=120", unit)
         self.assertIn("run_browser_wake_dispatcher.sh", unit)
+        launcher = self.text("scripts/run_browser_wake_dispatcher.sh")
+        self.assertIn("export GITHUB_TOKEN=", launcher)
+        self.assertNotIn("export GH_TOKEN=", launcher)
 
     def test_target_owns_both_services(self):
         target = self.text("systemd/master-autonomous-orchestration.target")
