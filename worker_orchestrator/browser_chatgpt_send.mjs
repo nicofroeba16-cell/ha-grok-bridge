@@ -187,7 +187,7 @@ async function resolveByTitle(page, title) {
   await page.keyboard.down('Control');
   await page.keyboard.press('KeyA');
   await page.keyboard.up('Control');
-  await page.keyboard.insertText(title);
+  await page.keyboard.type(title);
   await new Promise((resolve) => setTimeout(resolve, 1800));
 
   const matches = await page.evaluate((wanted) => {
@@ -262,7 +262,7 @@ async function main() {
     const composer = await page.$(composerSelector);
     if (!composer) throw new Error('ChatGPT composer not found');
     await composer.focus();
-    await page.keyboard.insertText(request.payload);
+    await page.keyboard.type(request.payload);
 
     const sendSelector = [
       'button[data-testid="send-button"]',
