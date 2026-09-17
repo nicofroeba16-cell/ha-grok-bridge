@@ -1,33 +1,46 @@
 # AUTO Control Center
 
-Read-only visual control plane for the Master / Worker Orchestrator / Browser Wake stack.
+Local read-only visual control plane for the Master / Worker Orchestrator / Browser Wake stack.
 
-## Scope of v0.1
+## v1 safety contract
 
-The first version is deliberately read-only. It visualizes current state but exposes no endpoints for wake, retry, restart, merge, deploy, approval, secret handling, device control, network changes, or other mutations.
+The v1 application has **no mutation endpoints**. It can read current state, but it cannot wake, retry, restart, merge, deploy, approve, rotate secrets, change devices, modify Home Assistant, or install/start services. The supported launcher binds to `127.0.0.1` only.
+
+GitHub and the existing ledgers remain the source of truth. The UI never promotes prose such as `last_progress` into verified state. Display-state precedence is:
+
+1. current `user_gate` -> `WAITING_FOR_USER`
+2. current blockers -> `BLOCKED`
+3. current failing CI state -> `BLOCKED`
+4. otherwise the current Orchestrator ledger state
+
+This implements the project rule **VERIFIED CURRENT STATE > worker report**. The UI labels its local worker/evidence source as `orchestrator_ledger`; it does not claim a GitHub verification that is not present in the ledger.
 
 ## Data sources
 
-- Worker Orchestrator SQLite database
-- Browser Wake SQLite database
-- Browser Wake route registry
-- read-only `systemctl --user show` state for selected services
+All adapters are read-only:
 
-SQLite databases are opened with SQLite URI `mode=ro`.
+- Worker Orchestrator SQLite database via SQLite URI `mode=ro`
+- Browser Wake SQLite database via SQLite URI `mode=ro`
+- Browser Wake route registry; only binding kind is exposed, never the destination URL/title value
+- `systemctl --user show` for selected service state
 
-## UI
+The API intentionally does not expose configured filesystem paths. Route destinations are summarized, not returned. Text and structured data pass through recursive secret redaction before they reach the API/UI.
 
-The dashboard shows:
+## UI / API
 
-- newest Master request and child graph
-- worker cards with lifecycle state, goal, repo, branch, HEAD, CI and blockers
-- Orchestrator event timeline
-- Browser Wake delivery history and pending queues
-- route-binding summary without exposing destination URLs
-- systemd service health
-- live updates over Server-Sent Events
+The responsive desktop/iPhone dashboard provides:
 
-## API
+- Master/goal overview and progress
+- visual child/dependency graph
+- worker cards with resolved state, goal, repo, branch, issue, HEAD, CI, blockers and user gates
+- event timeline
+- Browser Wake delivery/queue status
+- Evidence/CI overview from current ledger fields
+- route-binding summary
+- source and service health
+- live refresh over Server-Sent Events
+
+Read-only endpoints:
 
 - `GET /api/health`
 - `GET /api/dashboard`
@@ -36,41 +49,47 @@ The dashboard shows:
 - `GET /api/events`
 - `GET /api/wakes`
 - `GET /api/routes`
+- `GET /api/evidence`
 - `GET /api/stream`
 
-FastAPI docs are available at `/api/docs`.
+FastAPI docs are at `/api/docs`.
 
-## Local runtime target
-
-The service is intended to run on the authorized runner and bind only to:
-
-`127.0.0.1:8877`
-
-The example user-service is `auto-control-center.service.example`.
-
-## Environment
-
-Optional path overrides:
-
-- `ACC_ORCHESTRATOR_DB`
-- `ACC_BROWSER_WAKE_DB`
-- `ACC_BROWSER_ROUTES`
-- `ACC_SYSTEMD_SERVICES`
-
-No token or secret environment variable is required by this MVP.
-
-## Development
+## Local development
 
 ```bash
 python3 -m venv .venv
 . .venv/bin/activate
 pip install -r auto_control_center/requirements.txt
-python -m unittest auto_control_center.tests.test_data
-uvicorn auto_control_center.app:app --host 127.0.0.1 --port 8877
+python -m unittest discover -s auto_control_center/tests -t . -v
+python -m auto_control_center
 ```
 
-## Safety
+The supported launcher binds exactly to `127.0.0.1:8877`. Only the port can be changed:
 
-The UI must not become an alternative source of truth. GitHub, the Orchestrator database, Browser Wake ledger, exact-head CI and runtime evidence remain authoritative. A worker message alone must never be rendered as verified completion unless the canonical state sources support it.
+```bash
+ACC_PORT=8899 python -m auto_control_center
+```
 
-Any future mutation endpoint must be introduced separately with explicit user-gate semantics, audit logging, exact target display and fail-closed behavior.
+Do not launch this v1 with a public bind such as `0.0.0.0`.
+
+## Optional source overrides
+
+- `ACC_ORCHESTRATOR_DB`
+- `ACC_BROWSER_WAKE_DB`
+- `ACC_BROWSER_ROUTES`
+- `ACC_SYSTEMD_SERVICES`
+- `ACC_PORT`
+
+No token or secret environment variable is required by this MVP.
+
+## Tests
+
+The test suite covers:
+
+- SQLite adapters and byte-for-byte no-write behavior
+- route destination minimization
+- recursive secret redaction
+- state precedence and CI mapping
+- API surface (GET/HEAD only) and required endpoints
+
+No existing Orchestrator, Browser Wake, Home Assistant, service, device or secret state is mutated by these tests.
