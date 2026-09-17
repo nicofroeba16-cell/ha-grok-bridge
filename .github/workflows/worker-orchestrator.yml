@@ -35,3 +35,5 @@ jobs:
         run: python -m unittest discover -s tests -v
       - name: Compile check
         run: python -m compileall -q src tests
+      - name: Browser helper syntax
+        run: node --check browser_chatgpt_send.mjs
