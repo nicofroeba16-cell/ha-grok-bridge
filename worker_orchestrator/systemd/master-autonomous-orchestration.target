@@ -1,0 +1,8 @@
+[Unit]
+Description=Master Autonomous Orchestration
+Requires=browser-wake-chrome.service browser-wake.service
+After=browser-wake-chrome.service browser-wake.service
+Wants=network-online.target
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,21 @@
+[Unit]
+Description=Authenticated Chrome runtime for ChatGPT Browser Wake
+After=graphical-session.target network-online.target
+Wants=network-online.target
+PartOf=master-autonomous-orchestration.target
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/worker-orchestrator-browser-wake/runtime.env
+ExecStart=%h/.local/share/browser-wake/current/worker_orchestrator/scripts/run_browser_wake_chrome.sh
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=20
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=master-autonomous-orchestration.target
