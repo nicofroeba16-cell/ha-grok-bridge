@@ -214,6 +214,8 @@ import hashlib
 import hmac
 import os
 import sys
+import time
+import urllib.error
 import urllib.request
 
 pid = sys.argv[1]
@@ -229,9 +231,16 @@ secret = environment.get("GITHUB_WEBHOOK_SECRET", "")
 if secret:
     headers["X-Hub-Signature-256"] = "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
 request = urllib.request.Request("http://127.0.0.1:8787", data=body, headers=headers, method="POST")
-with urllib.request.urlopen(request, timeout=10) as response:
-    if response.status != 202:
-        raise SystemExit(f"Unexpected wake response: {response.status}")
+for attempt in range(30):
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            if response.status != 202:
+                raise SystemExit(f"Unexpected wake response: {response.status}")
+            break
+    except urllib.error.URLError:
+        if attempt == 29:
+            raise
+        time.sleep(1)
 PY
 }
 
