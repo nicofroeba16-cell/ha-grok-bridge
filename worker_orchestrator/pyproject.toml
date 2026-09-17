@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "runner-worker-orchestrator"
-version = "0.1.0"
+version = "0.2.0"
 description = "Persistent runner-side orchestrator for Master assignments"
 requires-python = ">=3.11"
 dependencies = []
