@@ -36,4 +36,7 @@ jobs:
       - name: Compile check
         run: python -m compileall -q src tests
       - name: Browser helper syntax
-        run: node --check browser_chatgpt_send.mjs
+        run: |
+          node --check browser_chatgpt_send.mjs
+          node --check chatgpt_desktop_send.mjs
+          node chatgpt_desktop_send.mjs --self-test

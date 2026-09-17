@@ -46,40 +46,40 @@ A browser wake is not an authorization for merge, deployment, restart, device/ne
 
 ## Route file
 
-Routes are kept outside the public repository because conversation URLs identify private conversation targets.
+Routes may use an exact ChatGPT conversation URL or an exact visible chat title. Title routing keeps private conversation IDs out of the repository and is the preferred form for the free local transports.
 
 ```json
 {
-  "__master__": {
-    "url": "https://chatgpt.com/c/<master-conversation-id>"
-  },
-  "Projekt: Example → Chat: Worker": {
-    "url": "https://chatgpt.com/g/g-p-<project-id>/c/<worker-conversation-id>"
-  }
+  "__master__": {"title": "Master-Verteilung"},
+  "Projekt: Example → Chat: Worker": {"title": "Worker Chat"}
 }
 ```
 
-Only credential-free `https://chatgpt.com/.../c/<conversation-id>` URLs are accepted.
+`browser_wake_search` converts titles to `chat-title:<exact title>` and fails closed if the title is missing or ambiguous. URL locators remain supported by the legacy web helper.
 
-## Browser helper
+## Local transport backends
 
-`browser_chatgpt_send.mjs` uses Puppeteer and accepts exactly one JSON object on stdin:
+### Web browser helper
 
-```json
-{
-  "message_id": "worker-wake:req:v1:child",
-  "destination": "https://chatgpt.com/c/...",
-  "payload": "WORKER_WAKE ..."
-}
-```
+`browser_chatgpt_send.mjs` uses an authenticated Chrome profile. Its runtime variables are `CHATGPT_PROFILE_DIR`, optional `CHATGPT_CHROME_BIN` (default `/usr/bin/google-chrome`), and optional `CHATGPT_BROWSER_HEADLESS`. On the verified runner, an isolated automated Chrome session currently reaches a ChatGPT protection/challenge page before the normal UI. The helper must fail closed there; this project does not add stealth fingerprinting, CAPTCHA solving, rate-limit bypasses, or other challenge circumvention.
 
-Required runtime variables:
+### ChatGPT desktop helper
 
-- `CHATGPT_PROFILE_DIR` — authenticated Chrome user-data directory.
-- `CHATGPT_CHROME_BIN` — Chrome executable, default `/usr/bin/google-chrome`.
-- `CHATGPT_BROWSER_HEADLESS` — defaults to headless; set `false` only for an explicitly approved interactive runtime.
+`chatgpt_desktop_send.mjs` is the zero-cost fallback for the official local ChatGPT desktop app. It connects only to a pre-existing loopback DevTools endpoint supplied through `CHATGPT_DESKTOP_DEBUG_URL`; it does not launch or reconfigure the app itself.
 
-The helper reports only delivery metadata such as `sent` or `failed`; it does not return page or model output.
+The desktop helper accepts the same one-line JSON request contract as the web helper. It resolves `chat-title:<exact title>`, targets exactly one visible composer and one send control, types the wake, and returns delivery metadata only. It never reads assistant/model output.
+
+A `desktop-thread:<UUID>` locator is parsed but intentionally disabled until mapping between an existing regular ChatGPT conversation and the desktop app's internal thread identity has been verified live. Static bundle inspection confirms `codex://threads/<UUID>` deep links for local app threads, but those IDs must not be guessed from ordinary `chatgpt.com/c/...` URLs.
+
+Security properties:
+
+- debug endpoint must be `http(s)` on loopback only; credentials in the URL are rejected;
+- ordinary web conversation URLs are not silently converted to desktop thread IDs;
+- missing or ambiguous title/search/composer/send controls fail before Send;
+- once the send click is initiated, any failure is treated as uncertain and is never retried automatically by the coordinator;
+- no API key and no paid OpenAI API path are used.
+
+The current live gate includes starting/reconfiguring the desktop app, enabling a DevTools endpoint, attaching the production helper, changing services/runtime files, or sending any real wake.
 
 ## Daemon
 
