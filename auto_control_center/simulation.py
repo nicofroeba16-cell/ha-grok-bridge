@@ -31,7 +31,7 @@ def _iso(minutes_ago: int) -> str:
     return stamp.isoformat()
 
 
-def _worker(index: int, state: str, *, partial: bool = False) -> dict[str, Any]:
+def _worker(index: int, state: str, *, partial: bool = False, stale: bool = False) -> dict[str, Any]:
     shared_pair = index in {2, 3, 8, 9}
     pair_root = 2 if index in {2, 3} else 8 if index in {8, 9} else index
     repository = f"example/control-{pair_root % 6}"
@@ -45,6 +45,7 @@ def _worker(index: int, state: str, *, partial: bool = False) -> dict[str, Any]:
         ci_status = "FAILURE"
     else:
         ci_status = "UNKNOWN"
+    updated_at = "2026-08-01T00:00:00+00:00" if stale and index % 3 == 0 else _iso(index * 7)
     row: dict[str, Any] = {
         "worker_key": f"Projekt: Simulation → Chat: Worker {index:03d}",
         "project": "Simulation",
@@ -61,7 +62,7 @@ def _worker(index: int, state: str, *, partial: bool = False) -> dict[str, Any]:
         "last_progress": "Representative worker report",
         "verified_criteria": ["scope", "tests"] if index % 3 else ["scope"],
         "done_criteria": ["scope", "tests", "visual"],
-        "updated_at": _iso(index * 7),
+        "updated_at": updated_at,
     }
     if index == 1:
         row["last_progress"] = "Bearer abcdefghijklmnop github_pat_abcdefghijklmnopqrstuv"
@@ -113,6 +114,7 @@ def build_simulation(
     wake_count: int = 72,
     degraded: bool = False,
     partial: bool = False,
+    stale: bool = False,
     empty: bool = False,
 ) -> dict[str, Any]:
     """Build deterministic, sanitized read-only data for UI/stability acceptance."""
@@ -120,7 +122,10 @@ def build_simulation(
         return _empty_payload(degraded=degraded)
 
     worker_count = max(1, worker_count)
-    raw_workers = [_worker(i, WORKER_STATES[i % len(WORKER_STATES)], partial=partial) for i in range(worker_count)]
+    raw_workers = [
+        _worker(i, WORKER_STATES[i % len(WORKER_STATES)], partial=partial, stale=stale)
+        for i in range(worker_count)
+    ]
     workers = annotate_registry_aliases([resolve_worker(sanitize(row)) for row in raw_workers])
 
     events = sanitize(
@@ -153,7 +158,8 @@ def build_simulation(
     for wake in wakes:
         wake["status_class"] = wake_class(wake.get("status"))
 
-    child_count = min(10, len(workers))
+    child_target = 36 if worker_count >= 80 else 10
+    child_count = min(child_target, len(workers))
     children = []
     for i in range(child_count):
         children.append(
@@ -235,6 +241,7 @@ def simulation_matrix() -> dict[str, dict[str, Any]]:
         "mixed": build_simulation(),
         "partial": build_simulation(worker_count=18, event_count=90, wake_count=54, partial=True),
         "degraded": build_simulation(worker_count=16, event_count=40, wake_count=30, degraded=True),
+        "stale": build_simulation(worker_count=16, event_count=48, wake_count=36, stale=True),
         "empty": build_simulation(empty=True),
-        "large": build_simulation(worker_count=180, event_count=900, wake_count=500, partial=True),
+        "large": build_simulation(worker_count=180, event_count=900, wake_count=500, partial=True, stale=True),
     }
