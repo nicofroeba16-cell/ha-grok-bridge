@@ -61,7 +61,9 @@ Routes may use an exact ChatGPT conversation URL or an exact visible chat title.
 
 ### Web browser helper
 
-`browser_chatgpt_send.mjs` uses an authenticated Chrome profile. Its runtime variables are `CHATGPT_PROFILE_DIR`, optional `CHATGPT_CHROME_BIN` (default `/usr/bin/google-chrome`), and optional `CHATGPT_BROWSER_HEADLESS`. On the verified runner, an isolated automated Chrome session currently reaches a ChatGPT protection/challenge page before the normal UI. The helper must fail closed there; this project does not add stealth fingerprinting, CAPTCHA solving, rate-limit bypasses, or other challenge circumvention.
+`browser_chatgpt_send.mjs` supports a long-lived authenticated Chrome process through `CHATGPT_BROWSER_URL`. Production uses the loopback-only endpoint `http://127.0.0.1:9224` and the dedicated profile `chrome-profile-web-v2`. The sender connects to the existing browser, sends one input, verifies assistant completion without reading assistant content, verifies persistence after reload, and then disconnects without closing Chrome.
+
+`browser_chatgpt_health.mjs` is the read-only health probe. It reports only technical states such as `HEALTHY`, `BLOCKED_AUTH`, `BLOCKED_CHALLENGE`, `DEGRADED_UI`, or `BROWSER_DOWN`; it never reads model output. Challenges are never bypassed: an auth or protection gate must be completed normally before automation resumes.
 
 ### ChatGPT desktop helper
 
@@ -80,6 +82,34 @@ Security properties:
 - no API key and no paid OpenAI API path are used.
 
 The current live gate includes starting/reconfiguring the desktop app, enabling a DevTools endpoint, attaching the production helper, changing services/runtime files, or sending any real wake.
+
+
+## systemd service integration
+
+The production service layout is deliberately split into three user units:
+
+- `browser-wake-chrome.service` owns one long-lived authenticated Chrome process and exposes DevTools only on `127.0.0.1:9224`.
+- `browser-wake.service` owns only the GitHub reconcile/dispatch loop. It requires the Chrome service and runs the read-only browser health probe before starting.
+- `master-autonomous-orchestration.target` groups both units for one explicit activation point.
+
+All runtime code is referenced through `~/.local/share/browser-wake/current`, which remains an atomic symlink to an immutable release directory. The prepared runtime keeps its SQLite delivery ledger and route files outside the release tree.
+
+`worker_orchestrator/scripts/prepare_browser_wake_services.sh` is intentionally **prepare-only**. It installs the three unit files, normalizes the runtime environment to the long-lived browser profile and loopback endpoint, runs `systemctl --user daemon-reload`, verifies the units, and refuses a state in which any of the new units is already enabled. It never starts, restarts, enables, or uses `--now`.
+
+Activation therefore remains a separate explicit gate:
+
+```text
+source + CI green
+  -> prepare units/config (disabled + inactive)
+  -> explicit activation approval
+  -> enable/start target
+  -> TEST_ONLY full E2E
+  -> restart/recovery matrix
+  -> short soak
+  -> autonomous operation
+```
+
+The existing independent `worker-orchestrator.service` is not modified or restarted by browser-wake preparation.
 
 ## Daemon
 

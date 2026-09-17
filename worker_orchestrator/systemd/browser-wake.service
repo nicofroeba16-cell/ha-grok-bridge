@@ -1,0 +1,22 @@
+[Unit]
+Description=Loop-safe ChatGPT Browser Wake Coordinator
+After=network-online.target browser-wake-chrome.service
+Wants=network-online.target
+Requires=browser-wake-chrome.service
+PartOf=master-autonomous-orchestration.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/worker-orchestrator-browser-wake/runtime.env
+ExecStartPre=/usr/bin/node %h/.local/share/browser-wake/current/worker_orchestrator/browser_chatgpt_health.mjs --wait=120
+ExecStart=%h/.local/share/browser-wake/current/worker_orchestrator/scripts/run_browser_wake_dispatcher.sh
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=master-autonomous-orchestration.target
