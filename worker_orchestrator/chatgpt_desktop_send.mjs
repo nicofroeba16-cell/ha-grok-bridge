@@ -57,12 +57,34 @@ function isLikelyShellUrl(raw) {
   if (!raw || raw === "about:blank" || raw.startsWith("devtools://")) return false;
   return !raw.startsWith("http://") && !raw.startsWith("https://");
 }
+function isPrimaryDesktopShellUrl(raw) {
+  try {
+    const url = new URL(raw);
+    return url.protocol === "app:" && url.hostname === "-" &&
+      url.pathname === "/index.html" && !url.search && !url.hash;
+  } catch {
+    return false;
+  }
+}
 
 async function pickShellPage(browser) {
   const pages = await browser.pages();
+  const primaries = pages.filter((page) => isPrimaryDesktopShellUrl(page.url()));
+  if (primaries.length === 1) return primaries[0];
+  if (primaries.length > 1) throw new Error("multiple primary desktop shell pages found");
+
   const candidates = pages.filter((page) => isLikelyShellUrl(page.url()));
-  if (candidates.length === 1) return candidates[0];
-  if (candidates.length > 1) throw new Error("multiple desktop shell pages found");
+  const landmarkMatches = [];
+  for (const page of candidates) {
+    const meta = await page.evaluate(() => ({
+      nav: document.querySelectorAll('nav, aside, [role="navigation"]').length,
+      composer: document.querySelectorAll('#prompt-textarea, textarea, [contenteditable="true"][role="textbox"]').length,
+    })).catch(() => ({ nav: 0, composer: 0 }));
+    if (meta.nav > 0 && meta.composer > 0) landmarkMatches.push(page);
+  }
+  if (landmarkMatches.length === 1) return landmarkMatches[0];
+  if (landmarkMatches.length > 1) throw new Error("multiple desktop shell pages match navigation/composer landmarks");
+
   const usable = pages.filter((page) => page.url() !== "about:blank" && !page.url().startsWith("devtools://"));
   if (usable.length === 1) return usable[0];
   throw new Error("desktop shell page could not be resolved uniquely");
@@ -174,6 +196,9 @@ function selfTest() {
   assert(parseDestination("chat-title:Alpha").title === "Alpha", "title locator");
   assert(parseDestination("desktop-thread:123e4567-e89b-12d3-a456-426614174000").kind === "thread", "thread locator");
   assert(parseDebugUrl("http://127.0.0.1:9223") === "http://127.0.0.1:9223", "loopback debug URL");
+  assert(isPrimaryDesktopShellUrl("app://-/index.html"), "primary desktop shell URL");
+  assert(!isPrimaryDesktopShellUrl("app://-/index.html?initialRoute=%2Favatar-overlay"), "overlay is not primary shell");
+  assert(!isPrimaryDesktopShellUrl("app://-/detached-window.html?initialRoute=%2Fdetached-window"), "detached window is not primary shell");
   for (const bad of ["https://chatgpt.com/c/x", "chat-title:", "desktop-thread:nope"]) {
     let failed = false; try { parseDestination(bad); } catch { failed = true; }
     assert(failed, `must reject ${bad}`);
