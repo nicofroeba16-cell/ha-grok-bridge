@@ -16,7 +16,6 @@ from urllib.parse import urlparse
 
 from .control_plane import MasterRequestError, parse_master_request
 
-
 MASTER_ROUTE_KEY = "__master__"
 MASTER_RELEVANT_STATES = frozenset({"DONE", "BLOCKED", "WAITING_FOR_USER", "READY", "STALLED"})
 MASTER_RELEVANT_KINDS = frozenset({"WORKER_DONE", "WORKER_STALLED", "INTEGRATION_CONFLICT"})
@@ -70,8 +69,7 @@ class BrowserRouteRegistry:
         for key, config in value.items():
             if not isinstance(config, Mapping):
                 raise BrowserWakeError(f"browser route {key} must be an object")
-            url = cls._validate_url(str(config.get("url", "")))
-            routes[str(key)] = BrowserRoute(str(key), url)
+            routes[str(key)] = BrowserRoute(str(key), cls._validate_url(str(config.get("url", ""))))
         return cls(routes)
 
     @classmethod
@@ -87,20 +85,16 @@ def _hash(value: object) -> str:
 
 
 def _fields(body: str) -> dict[str, str]:
-    out: dict[str, str] = {}
+    result: dict[str, str] = {}
     for line in body.splitlines():
         if ":" in line:
             key, value = line.split(":", 1)
-            out[key.strip().upper()] = value.strip()
-    return out
+            result[key.strip().upper()] = value.strip()
+    return result
 
 
 def _kind(body: str) -> str:
-    for line in body.splitlines():
-        line = line.strip()
-        if line:
-            return line
-    return ""
+    return next((line.strip() for line in body.splitlines() if line.strip()), "")
 
 
 def _event_id(item: Mapping, fallback: int) -> int:
@@ -116,20 +110,18 @@ def master_event_fingerprint(item: Mapping) -> str | None:
     if not kind or kind in IGNORED_KINDS or kind.startswith("BROWSER_WAKE_"):
         return None
     fields = _fields(body)
-    if kind in MASTER_RELEVANT_KINDS:
-        pass
-    elif kind == "WORKER_STATUS":
+    if kind not in MASTER_RELEVANT_KINDS:
+        if kind != "WORKER_STATUS":
+            return None
         state = fields.get("STATE", "").upper()
         ci = fields.get("CI", "").upper()
         user_action = fields.get("USER_ACTION_REQUIRED", "").strip().lower()
         if state not in MASTER_RELEVANT_STATES and ci not in {"RED", "FAIL", "FAILED", "FAILURE"}:
             if user_action in {"", "[]", "none", "null"}:
                 return None
-    else:
-        return None
     explicit = fields.get("FINGERPRINT", "")
     if explicit:
-        return f"canonical:{explicit}"
+        return "canonical:" + explicit
     semantic = {
         "kind": kind,
         "project": fields.get("PROJECT", ""),
@@ -153,26 +145,23 @@ class WakeLedger:
         with self.connection:
             self.connection.executescript("""
                 CREATE TABLE IF NOT EXISTS browser_wake_meta (
-                    key TEXT PRIMARY KEY,
-                    value TEXT NOT NULL
+                    key TEXT PRIMARY KEY, value TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS browser_wake_delivery (
-                    message_id TEXT PRIMARY KEY,
-                    route_key TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    attempts INTEGER NOT NULL DEFAULT 0,
-                    last_error TEXT NOT NULL DEFAULT '',
-                    updated_at REAL NOT NULL
+                    message_id TEXT PRIMARY KEY, route_key TEXT NOT NULL,
+                    status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+                    last_error TEXT NOT NULL DEFAULT '', updated_at REAL NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS browser_wake_seen_status (
-                    fingerprint TEXT PRIMARY KEY,
-                    event_id INTEGER NOT NULL
+                    fingerprint TEXT PRIMARY KEY, event_id INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS browser_wake_pending_worker (
+                    message_id TEXT PRIMARY KEY, route_key TEXT NOT NULL,
+                    destination TEXT NOT NULL, payload TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS browser_wake_pending_master (
-                    id INTEGER PRIMARY KEY CHECK(id=1),
-                    event_ids TEXT NOT NULL,
-                    first_seen REAL NOT NULL,
-                    max_event_id INTEGER NOT NULL
+                    id INTEGER PRIMARY KEY CHECK(id=1), event_ids TEXT NOT NULL,
+                    first_seen REAL NOT NULL, max_event_id INTEGER NOT NULL
                 );
             """)
 
@@ -221,7 +210,7 @@ class WakeLedger:
         with self.connection:
             self.connection.execute(
                 """INSERT INTO browser_wake_delivery(message_id,route_key,status,attempts,last_error,updated_at)
-                   VALUES(?,?, 'IN_FLIGHT',1,'',?) ON CONFLICT(message_id) DO UPDATE SET
+                   VALUES(?,?,'IN_FLIGHT',1,'',?) ON CONFLICT(message_id) DO UPDATE SET
                    route_key=excluded.route_key,status='IN_FLIGHT',attempts=browser_wake_delivery.attempts+1,
                    last_error='',updated_at=excluded.updated_at""",
                 (message_id, route_key, time.time()),
@@ -236,13 +225,32 @@ class WakeLedger:
             )
 
     def recover_interrupted(self) -> None:
-        # At-most-once safety: an interrupted send may already have reached ChatGPT.
-        # Never retry it automatically because that could create duplicate wake loops.
+        # At-most-once safety: a crashed process may already have clicked Send.
+        # Never retry such a wake automatically.
         with self.connection:
             self.connection.execute(
                 "UPDATE browser_wake_delivery SET status='UNCERTAIN',last_error='INTERRUPTED_AFTER_CLAIM',updated_at=? WHERE status='IN_FLIGHT'",
                 (time.time(),),
             )
+
+    def queue_worker(self, message_id: str, route_key: str, destination: str, payload: str) -> None:
+        row = self.delivery(message_id)
+        if row and row[0] in {"DELIVERED", "UNCERTAIN", "BLOCKED"}:
+            return
+        with self.connection:
+            self.connection.execute(
+                "INSERT OR IGNORE INTO browser_wake_pending_worker(message_id,route_key,destination,payload) VALUES(?,?,?,?)",
+                (message_id, route_key, destination, payload),
+            )
+
+    def pending_workers(self) -> list[tuple[str, str, str, str]]:
+        return [tuple(row) for row in self.connection.execute(
+            "SELECT message_id,route_key,destination,payload FROM browser_wake_pending_worker ORDER BY message_id"
+        )]
+
+    def remove_pending_worker(self, message_id: str) -> None:
+        with self.connection:
+            self.connection.execute("DELETE FROM browser_wake_pending_worker WHERE message_id=?", (message_id,))
 
     def pending_master(self) -> tuple[list[int], float, int] | None:
         row = self.connection.execute(
@@ -269,11 +277,7 @@ class WakeLedger:
 
 
 class CommandBrowserSender:
-    """Input-only ChatGPT browser sender.
-
-    The command receives exactly one JSON object on stdin and must return one JSON
-    object on stdout. It is never asked to scrape or return ChatGPT output.
-    """
+    """Input-only sender. The helper returns delivery metadata, never ChatGPT output."""
 
     def __init__(self, command: str, *, timeout: int = 45):
         parts = shlex.split(command)
@@ -283,19 +287,11 @@ class CommandBrowserSender:
         self.timeout = max(5, timeout)
 
     def __call__(self, message_id: str, destination: str, payload: str) -> None:
-        request = json.dumps({
-            "message_id": message_id,
-            "destination": destination,
-            "payload": payload,
-        }, ensure_ascii=False)
+        request = json.dumps({"message_id": message_id, "destination": destination, "payload": payload}, ensure_ascii=False)
         try:
             proc = subprocess.run(
-                self.command,
-                input=request + "\n",
-                text=True,
-                capture_output=True,
-                timeout=self.timeout,
-                check=False,
+                self.command, input=request + "\n", text=True, capture_output=True,
+                timeout=self.timeout, check=False,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise BrowserWakePreSendError(str(exc)) from exc
@@ -349,17 +345,16 @@ class WakeCoordinator:
 
         cursor = self.ledger.get_int("scan_cursor", 0)
         ordered = sorted(
-            [(_event_id(item, i + 1), item) for i, item in enumerate(items)],
+            [(_event_id(item, index + 1), item) for index, item in enumerate(items)],
             key=lambda pair: pair[0],
         )
         new_items = [(event_id, item) for event_id, item in ordered if event_id > cursor]
-        worker_wakes = 0
         relevant_master_ids: list[int] = []
 
         for event_id, item in new_items:
             body = str(item.get("body", ""))
             if _kind(body) == "MASTER_REQUEST":
-                worker_wakes += self._dispatch_request(body, event_id)
+                self._queue_request(body, event_id)
             fingerprint = master_event_fingerprint(item)
             if fingerprint and not self.ledger.has_seen_status(fingerprint):
                 self.ledger.mark_seen_status(fingerprint, event_id)
@@ -371,22 +366,20 @@ class WakeCoordinator:
         if relevant_master_ids:
             self.ledger.add_pending_master(relevant_master_ids, max_seen, self.now())
 
+        worker_wakes = self._flush_worker_pending()
         master_wakes = self._flush_master_pending()
         return {
-            "state": "OK",
-            "cursor": max_seen,
-            "worker_wakes": worker_wakes,
-            "master_wakes": master_wakes,
+            "state": "OK", "cursor": max_seen,
+            "worker_wakes": worker_wakes, "master_wakes": master_wakes,
         }
 
-    def _dispatch_request(self, body: str, event_id: int) -> int:
+    def _queue_request(self, body: str, event_id: int) -> None:
         try:
             request = parse_master_request(body, event_id)
         except MasterRequestError:
-            return 0
+            return
         if request is None:
-            return 0
-        sent = 0
+            return
         for child in request.children:
             route = self.routes.get(child.worker_key)
             if route is None:
@@ -401,11 +394,20 @@ class WakeCoordinator:
                 f"MASTER: {self.master_repo}#{self.master_issue}",
                 f"WORKSTREAM_ISSUE: {child.workstream_issue or ''}",
                 "ACTION: New GitHub work is available. Read your assigned workstream issue and Master state, then continue only your owned scope.",
-                "LOOP_GUARD: Do not reply to this wake through the browser relay. Report substantive status only through the canonical GitHub workstream log.",
+                "LOOP_GUARD: Do not answer this wake through the browser relay. Report substantive status only through the canonical GitHub workstream log.",
                 "LIVE_GATE: Every live-system mutation still requires separate explicit user approval.",
             ])
-            if self._send_once(message_id, child.worker_key, route.url, payload):
+            self.ledger.queue_worker(message_id, child.worker_key, route.url, payload)
+
+    def _flush_worker_pending(self) -> int:
+        sent = 0
+        for message_id, route_key, destination, payload in self.ledger.pending_workers():
+            delivered = self._send_once(message_id, route_key, destination, payload)
+            row = self.ledger.delivery(message_id)
+            if delivered:
                 sent += 1
+            if row and row[0] in {"DELIVERED", "UNCERTAIN", "BLOCKED"}:
+                self.ledger.remove_pending_worker(message_id)
         return sent
 
     def _flush_master_pending(self) -> int:
@@ -418,8 +420,7 @@ class WakeCoordinator:
         route = self.routes.get(MASTER_ROUTE_KEY)
         if route is None:
             return 0
-        digest = _hash(event_ids)[:20]
-        message_id = f"master-wake:{digest}"
+        message_id = f"master-wake:{_hash(event_ids)[:20]}"
         payload = "\n".join([
             "MASTER_WAKE",
             f"WAKE_ID: {message_id}",
@@ -430,13 +431,11 @@ class WakeCoordinator:
             "LOOP_GUARD: Do not create a wake/status echo. Master-originated and browser-relay-originated messages never trigger Master again.",
             "LIVE_GATE: Every live-system mutation still requires separate explicit user approval.",
         ])
-        status = self._send_once(message_id, MASTER_ROUTE_KEY, route.url, payload)
+        delivered = self._send_once(message_id, MASTER_ROUTE_KEY, route.url, payload)
         row = self.ledger.delivery(message_id)
-        if status or (row and row[0] in {"DELIVERED", "UNCERTAIN", "BLOCKED"}):
-            # DELIVERED is complete. UNCERTAIN/BLOCKED are deliberately not retried
-            # automatically: duplicate wakes are more dangerous than one missed wake.
+        if delivered or (row and row[0] in {"DELIVERED", "UNCERTAIN", "BLOCKED"}):
             self.ledger.clear_pending_master()
-        return int(status)
+        return int(delivered)
 
     def _send_once(self, message_id: str, route_key: str, destination: str, payload: str) -> bool:
         row = self.ledger.delivery(message_id)
@@ -483,19 +482,18 @@ def main(argv: list[str] | None = None) -> int:
     sender = CommandBrowserSender(args.browser_command)
     connection = sqlite3.connect(args.db)
     coordinator = WakeCoordinator(
-        connection,
-        routes,
-        sender,
-        master_repo=args.master_repo,
-        master_issue=args.master_issue,
+        connection, routes, sender,
+        master_repo=args.master_repo, master_issue=args.master_issue,
         debounce_seconds=args.debounce_seconds,
     )
     from .github_client import GitHubClient
     gh = GitHubClient.from_env()
 
     def run_once() -> dict[str, int | str]:
-        items = gh.read_master_items(args.master_repo, args.master_issue)
-        return coordinator.reconcile(items, replay_existing=args.replay_existing)
+        return coordinator.reconcile(
+            gh.read_master_items(args.master_repo, args.master_issue),
+            replay_existing=args.replay_existing,
+        )
 
     try:
         if args.cmd == "once":
