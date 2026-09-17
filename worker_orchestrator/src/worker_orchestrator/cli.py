@@ -14,8 +14,9 @@ from .control_plane import MasterControlPlane, RouteRegistry
 from .engine import DocumentationDriftError, Orchestrator, format_report
 from .github_client import GitHubClient
 from .models import DEFAULT_ALLOWED_REPOSITORIES, Goal, LifecycleState
+from .relay import ChatRelayClient
 from .store import Registry
-from .worker import CommandWorkerAdapter
+from .worker import CommandWorkerAdapter, NoExecutionWorkerAdapter
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -32,6 +33,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=os.environ.get("MASTER_CONTROL_ENABLED", "").lower() in {"1", "true", "yes"},
     )
     parser.add_argument("--chat-routes-json", default=os.environ.get("CHAT_ROUTES_JSON", ""))
+    parser.add_argument("--chat-routes-file", default=os.environ.get("CHAT_ROUTES_FILE", ""))
+    parser.add_argument("--chat-relay-url", default=os.environ.get("CHAT_RELAY_URL", ""))
     parser.add_argument("--master-control-issue", type=int, default=int(os.environ.get("MASTER_CONTROL_ISSUE", "9")))
     parser.add_argument("--master-outbox", default=os.environ.get("MASTER_OUTBOX", ""))
     parser.add_argument(
@@ -46,6 +49,15 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--webhook-port", type=int, default=int(os.environ.get("WEBHOOK_PORT", "8787")))
     sub.add_parser("status")
     return parser
+
+
+def _load_routes(args) -> RouteRegistry:
+    raw = args.chat_routes_json
+    if args.chat_routes_file:
+        if raw.strip():
+            raise SystemExit("configure either CHAT_ROUTES_JSON or CHAT_ROUTES_FILE, not both")
+        raw = Path(args.chat_routes_file).read_text(encoding="utf-8")
+    return RouteRegistry.from_json(raw)
 
 
 def _goal_from_row(row) -> Goal:
@@ -89,6 +101,8 @@ def reconcile(
     master_repo: str,
     master_issue: int,
     control_plane: MasterControlPlane | None = None,
+    *,
+    execute_workers: bool = True,
 ) -> None:
     try:
         items = gh.read_master_items(master_repo, master_issue)
@@ -105,8 +119,16 @@ def reconcile(
                         destinations[target] = read_issue(*target)
             engine.reconcile_documentation(items, destinations, (master_repo, master_issue))
         engine.ingest_items(items)
-        rows = [row for row in engine.registry.list_dispatchable()
-                if row["worker_key"] not in getattr(engine, "documentation_reconciled_keys", set())]
+        if hasattr(engine, "reconcile_external_blockers"):
+            engine.reconcile_external_blockers()
+        rows = []
+        if execute_workers:
+            rows = [
+                row for row in engine.registry.list_dispatchable()
+                if row["worker_key"] not in getattr(
+                    engine, "documentation_reconciled_keys", set()
+                )
+            ]
     except Exception:
         # A failed poll must not take down the long-running daemon.
         return
@@ -185,12 +207,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     registry.recover_interrupted()
-
-    if not args.worker_command:
-        raise SystemExit(
-            "WORKER_COMMAND/--worker-command is required for execution; "
-            "browser/UI automation is intentionally unsupported"
-        )
+    execute_workers = bool(args.worker_command.strip())
+    if not execute_workers:
+        registry.requeue_executor_failures()
 
     gh = GitHubClient.from_env()
     worker_env = tuple(
@@ -203,13 +222,18 @@ def main(argv: list[str] | None = None) -> int:
         x.strip() for x in allowed_repos_env.split(",") if x.strip()
     } or set(DEFAULT_ALLOWED_REPOSITORIES)
 
-    engine = Orchestrator(
-        registry,
+    worker = (
         CommandWorkerAdapter(
             args.worker_command,
             env_allowlist=worker_env,
             workspace_root=args.workspace_root,
-        ),
+        )
+        if execute_workers
+        else NoExecutionWorkerAdapter()
+    )
+    engine = Orchestrator(
+        registry,
+        worker,
         reporter=make_reporter(gh, args.master_repo, args.master_issue),
         dry_run=not args.allow_non_dry_run,
         ci_verifier=gh.exact_head_ci,
@@ -218,19 +242,31 @@ def main(argv: list[str] | None = None) -> int:
 
     control_plane = None
     if args.enable_control_plane:
-        routes = RouteRegistry.from_json(args.chat_routes_json)
+        routes = _load_routes(args)
+        relay = (
+            ChatRelayClient(
+                args.chat_relay_url,
+                token=os.environ.get("CHAT_RELAY_TOKEN", ""),
+            )
+            if args.chat_relay_url
+            else None
+        )
         control_plane = MasterControlPlane(
             registry.conn,
             routes,
             github_dispatch=lambda destination, body: gh.post_issue_comment(
                 args.master_repo, int(destination.split(":", 1)[1]), body
             ),
+            relay_dispatch=relay.deliver if relay else None,
             outbox_path=args.master_outbox or None,
             reporter=lambda body: gh.post_issue_comment(args.master_repo, args.master_control_issue, body),
         )
 
     if args.cmd == "once":
-        reconcile(engine, gh, args.master_repo, args.master_issue, control_plane)
+        reconcile(
+            engine, gh, args.master_repo, args.master_issue, control_plane,
+            execute_workers=execute_workers,
+        )
         registry.close()
         return 0
 
@@ -247,7 +283,10 @@ def main(argv: list[str] | None = None) -> int:
     signal.signal(signal.SIGTERM, stop_handler)
     try:
         while not stop.is_set():
-            reconcile(engine, gh, args.master_repo, args.master_issue, control_plane)
+            reconcile(
+                engine, gh, args.master_repo, args.master_issue, control_plane,
+                execute_workers=execute_workers,
+            )
             wake.wait(timeout=max(30, args.poll_seconds))
             wake.clear()
     finally:

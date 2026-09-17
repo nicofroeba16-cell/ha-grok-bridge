@@ -182,6 +182,64 @@ class ControlPlaneHarness(unittest.TestCase):
         self.assertEqual(records[0]["destination"], "chat-route-source")
         self.assertEqual(records[0]["delivery_semantics"], "relay_pending")
 
+    def test_chat_relay_dispatch_is_exact_and_idempotent(self):
+        calls = []
+        route = RouteRegistry({
+            "Projekt: Example → Chat: Source Worker": ChatRoute(
+                "Projekt: Example → Chat: Source Worker",
+                "chat_relay",
+                "chat-route:example/source-worker",
+            )
+        })
+        control = MasterControlPlane(
+            self.conn,
+            route,
+            relay_dispatch=lambda message_id, destination, payload: calls.append(
+                (message_id, destination, payload)
+            ),
+        )
+        one_child = request_body(second_depends=False)
+        graph_marker = "WORK_GRAPH_JSON:\n"
+        prefix, raw = one_child.split(graph_marker, 1)
+        graph = json.loads(raw)[:1]
+        item = self.item(prefix + graph_marker + json.dumps(graph))
+        control.reconcile([item], [])
+        control.reconcile([item], [])
+        control.reconcile([item], [])
+        self.assertEqual(len(calls), 1)
+        message_id, destination, payload = calls[0]
+        self.assertEqual(message_id, "synthetic-e2e:v1:source")
+        self.assertEqual(destination, "chat-route:example/source-worker")
+        self.assertIn("CHAT: Source Worker", payload)
+
+    def test_chat_relay_route_requires_logical_route_id(self):
+        raw = json.dumps({
+            "Projekt: Example → Chat: Source Worker": {
+                "transport": "chat_relay",
+                "destination": "plain-chat-title",
+            }
+        })
+        with self.assertRaises(MasterRequestError):
+            RouteRegistry.from_json(raw)
+
+    def test_production_route_registry_contains_visible_chats(self):
+        route_file = Path(__file__).parents[1] / "config" / "chat-routes.json"
+        routes = RouteRegistry.from_json(route_file.read_text(encoding="utf-8"))
+        self.assertEqual(len(routes.routes), 18)
+        expected = {
+            "Projekt: HA Simulation → Chat: HA Testumgebung planen",
+            "Projekt: Drucker → Chat: Brother Companion planen",
+            "Projekt: Dashboards → Chat: Fire TV Medienkarte erweitern",
+            "Projekt: Mähroboter → Chat: Status Mähroboter Read only",
+            "Projekt: Health → Chat: Schlüsselinventur planen",
+            "Projekt: IOS App → Chat: iOS Admin Chat Status",
+            "Projekt: Run optimization → Chat: Stand zusammenfassen",
+        }
+        self.assertTrue(expected.issubset(routes.routes))
+        self.assertTrue(
+            all(route.transport == "chat_relay" for route in routes.routes.values())
+        )
+
     def test_unknown_direct_chat_transport_is_rejected(self):
         raw = json.dumps({
             "Projekt: Example → Chat: Source Worker": {
