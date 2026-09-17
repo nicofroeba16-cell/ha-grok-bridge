@@ -292,6 +292,9 @@ async function main() {
       return [...document.querySelectorAll('[data-message-author-role="user"]')]
         .filter((turn) => normalize(turn.innerText || turn.textContent || '').includes(expected)).length;
     }, expectedPayload);
+    const assistantTurnsBefore = await page.evaluate(() =>
+      document.querySelectorAll('[data-message-author-role="assistant"]').length
+    );
 
     // From this point onward a process interruption is delivery-uncertain.
     // The Python ledger deliberately never retries uncertain sends automatically.
@@ -309,9 +312,40 @@ async function main() {
       throw new Error('post-send delivery could not be verified in ChatGPT conversation');
     }
 
+    // Do not reload while ChatGPT is still producing the response. A reload during
+    // generation can interrupt server-side turn persistence. We inspect only turn
+    // counts and control state here; assistant output content is never scraped.
+    try {
+      await page.waitForFunction(({ before }) => {
+        const assistantCount = document.querySelectorAll('[data-message-author-role="assistant"]').length;
+        const stop = document.querySelector([
+          'button[data-testid="stop-button"]',
+          'button[aria-label="Stop generating"]',
+          'button[aria-label="Generierung stoppen"]',
+          'button[aria-label="Antwortgenerierung beenden"]',
+        ].join(','));
+        const sendButton = document.querySelector([
+          'button[data-testid="send-button"]',
+          'button[aria-label="Send prompt"]',
+          'button[aria-label="Senden"]',
+          'button[aria-label="Prompt senden"]',
+        ].join(','));
+        const sendReady = !!sendButton && !sendButton.disabled && sendButton.getAttribute('aria-disabled') !== 'true';
+        return assistantCount > before && !stop && sendReady;
+      }, { timeout: 120000, polling: 300 }, { before: assistantTurnsBefore });
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      const stable = await page.evaluate(({ before }) => {
+        const assistantCount = document.querySelectorAll('[data-message-author-role="assistant"]').length;
+        const stop = document.querySelector('button[data-testid="stop-button"],button[aria-label="Stop generating"],button[aria-label="Generierung stoppen"],button[aria-label="Antwortgenerierung beenden"]');
+        return assistantCount > before && !stop;
+      }, { before: assistantTurnsBefore });
+      if (!stable) throw new Error('assistant completion state was not stable');
+    } catch (_) {
+      throw new Error('ChatGPT response did not finish before persistence check');
+    }
+
     // A newly-rendered user turn can be optimistic UI only. Require persistence
-    // across a full reload before declaring delivery successful.
-    await new Promise((resolve) => setTimeout(resolve, 2000));
+    // across a full reload after the assistant response has completed.
     try {
       await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 });
       await page.waitForFunction((expected) => {
@@ -328,6 +362,7 @@ async function main() {
       message_id: request.messageId,
       delivery_verified: true,
       persisted_after_reload: true,
+      response_completed_before_reload: true,
       output_scraped: false,
     }) + '\n');
   } catch (error) {
