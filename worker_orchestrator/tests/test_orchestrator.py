@@ -278,6 +278,23 @@ class Harness(unittest.TestCase):
         self.assertEqual(goal.branch, "feat/x")
         self.assertEqual(goal.done_criteria, ("one", "two"))
 
+    def test_explicit_identity_is_not_overridden_by_referenced_route(self):
+        text = (
+            "GOAL PROMPT\n"
+            "PROJECT: Master Autonomous Orchestration\n"
+            "CHAT: Runner Control Plane Cutover\n"
+            "REPOSITORY: nicofroeba16-cell/ha-grok-bridge\n"
+            "BRANCH: fix/goal-identity-precedence\n"
+            "GOAL_VERSION: identity-precedence-v1\n"
+            "ROUTE TO CONFIGURE:\n"
+            "Projekt: Master Autonomous Orchestration → Chat: Control Plane E2E\n"
+            "DONE_CRITERIA:\n"
+            "- explicit identity remains authoritative\n"
+        )
+        goal = parse_goal_text(text, source_comment_id=12)
+        self.assertEqual(goal.project, "Master Autonomous Orchestration")
+        self.assertEqual(goal.chat, "Runner Control Plane Cutover")
+
     def test_duplicate_report_is_suppressed(self):
         g = self.goal()
         worker = ScriptedWorker([
