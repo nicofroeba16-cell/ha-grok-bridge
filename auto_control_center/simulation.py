@@ -39,7 +39,12 @@ def _worker(index: int, state: str, *, partial: bool = False) -> dict[str, Any]:
     goal_version = f"sim-goal-{pair_root % 7}-v1"
     blockers = ["Dependency evidence is still missing"] if state == "BLOCKED" else []
     user_gate = ["Explicit user approval required"] if state == "WAITING_FOR_USER" else []
-    ci_status = "FAILURE" if state == "ERROR" else "GREEN" if state in {"DONE", "READY"} else "UNKNOWN"
+    if state in {"DONE", "READY"}:
+        ci_status = "GREEN"
+    elif state == "ASSIGNED" and index % 16 == 7:
+        ci_status = "FAILURE"
+    else:
+        ci_status = "UNKNOWN"
     row: dict[str, Any] = {
         "worker_key": f"Projekt: Simulation → Chat: Worker {index:03d}",
         "project": "Simulation",
@@ -151,15 +156,16 @@ def build_simulation(
     child_count = min(10, len(workers))
     children = []
     for i in range(child_count):
-        child = {
-            "child_id": f"child-{i + 1}",
-            "worker_key": workers[i]["worker_key"],
-            "dependencies": [f"child-{i}"] if i else [],
-            "state": workers[i].get("resolved_state") or "UNKNOWN",
-            "blocker": (workers[i].get("blockers") or [""])[0] if workers[i].get("blockers") else "",
-            "dispatched": 1,
-        }
-        children.append(child)
+        children.append(
+            {
+                "child_id": f"child-{i + 1}",
+                "worker_key": workers[i]["worker_key"],
+                "dependencies": [f"child-{i}"] if i else [],
+                "state": workers[i].get("resolved_state") or "UNKNOWN",
+                "blocker": (workers[i].get("blockers") or [""])[0] if workers[i].get("blockers") else "",
+                "dispatched": 1,
+            }
+        )
 
     evidence = [evidence_for_worker(row) for row in workers]
     shared_groups = {
