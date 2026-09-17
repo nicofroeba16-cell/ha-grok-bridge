@@ -70,6 +70,102 @@ function saveCache(cache) {
   fs.renameSync(tmp, file);
 }
 
+async function visibleHistorySearchInput(page) {
+  const handle = await page.evaluateHandle(() => {
+    const visible = (el) => {
+      if (!el) return false;
+      const style = window.getComputedStyle(el);
+      const rect = el.getBoundingClientRect();
+      return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+    };
+    const inputs = [...document.querySelectorAll('input')].filter(visible);
+    for (const input of inputs) {
+      const metadata = [
+        input.getAttribute('placeholder'),
+        input.getAttribute('aria-label'),
+        input.getAttribute('name'),
+        input.getAttribute('data-testid'),
+      ].filter(Boolean).join(' ').toLowerCase();
+      const searchish = /(search|suchen|chat|conversation|unterhaltung)/i.test(metadata);
+      const overlay = input.closest('[role="dialog"], [role="menu"], [role="listbox"], [data-radix-popper-content-wrapper]');
+      if (searchish || overlay) return input;
+    }
+    return null;
+  });
+  const element = handle.asElement();
+  if (!element) await handle.dispose();
+  return element;
+}
+
+async function waitForHistorySearchInput(page, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const input = await visibleHistorySearchInput(page);
+    if (input) return input;
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  return null;
+}
+
+async function clickSidebarSearchTrigger(page) {
+  const handle = await page.evaluateHandle(() => {
+    const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+    const visible = (el) => {
+      if (!el) return false;
+      const style = window.getComputedStyle(el);
+      const rect = el.getBoundingClientRect();
+      return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+    };
+    const candidates = [...document.querySelectorAll('button, a, [role="button"]')].filter(visible);
+    const classified = candidates.map((el) => {
+      const label = normalize([
+        el.getAttribute('aria-label'),
+        el.getAttribute('title'),
+        el.getAttribute('data-testid'),
+        el.innerText,
+        el.textContent,
+      ].filter(Boolean).join(' ')).toLowerCase();
+      const sidebar = !!el.closest('nav, aside, [data-testid*="sidebar" i], [class*="sidebar" i]');
+      const historySearch = (
+        label === 'search' || label === 'suchen' ||
+        label.includes('search chats') || label.includes('search chat') ||
+        label.includes('chat search') || label.includes('chats durchsuchen') ||
+        label.includes('unterhaltungen durchsuchen') ||
+        label.includes('search-button') || label.includes('history-search')
+      );
+      const webSearch = label.includes('search the web') || label.includes('web search') || label.includes('web durchsuchen');
+      return { el, sidebar, historySearch, webSearch };
+    }).filter((item) => item.historySearch && !item.webSearch);
+    const sidebarMatches = classified.filter((item) => item.sidebar);
+    const selected = sidebarMatches.length === 1 ? sidebarMatches[0] : (classified.length === 1 ? classified[0] : null);
+    return selected ? selected.el : null;
+  });
+  const element = handle.asElement();
+  if (!element) {
+    await handle.dispose();
+    return false;
+  }
+  await element.click();
+  return true;
+}
+
+async function openHistorySearch(page) {
+  await page.keyboard.down('Control');
+  await page.keyboard.press('KeyK');
+  await page.keyboard.up('Control');
+
+  let input = await waitForHistorySearchInput(page, 2500);
+  if (input) return input;
+
+  const clicked = await clickSidebarSearchTrigger(page);
+  if (!clicked) {
+    throw new Error('ChatGPT history search did not open via Ctrl+K and no unique sidebar Search/Suchen trigger was found');
+  }
+  input = await waitForHistorySearchInput(page, 8000);
+  if (!input) throw new Error('ChatGPT history search input not found after sidebar search trigger');
+  return input;
+}
+
 async function resolveByTitle(page, title) {
   const cache = loadCache();
   if (cache[title]) {
@@ -86,32 +182,7 @@ async function resolveByTitle(page, title) {
   const initial = new URL(page.url());
   if (initial.hostname !== 'chatgpt.com') throw new Error('ChatGPT session redirected away from chatgpt.com');
 
-  await page.keyboard.down('Control');
-  await page.keyboard.press('KeyK');
-  await page.keyboard.up('Control');
-
-  await page.waitForFunction(() => {
-    const dialogs = [...document.querySelectorAll('[role="dialog"]')];
-    return dialogs.some((dialog) => {
-      const style = window.getComputedStyle(dialog);
-      if (style.display === 'none' || style.visibility === 'hidden') return false;
-      const input = dialog.querySelector('input');
-      return !!input;
-    });
-  }, { timeout: 10000 });
-
-  const inputHandle = await page.evaluateHandle(() => {
-    const dialogs = [...document.querySelectorAll('[role="dialog"]')];
-    for (const dialog of dialogs) {
-      const style = window.getComputedStyle(dialog);
-      if (style.display === 'none' || style.visibility === 'hidden') continue;
-      const input = dialog.querySelector('input');
-      if (input) return input;
-    }
-    return null;
-  });
-  const input = inputHandle.asElement();
-  if (!input) throw new Error('ChatGPT history search input not found');
+  const input = await openHistorySearch(page);
   await input.click();
   await page.keyboard.down('Control');
   await page.keyboard.press('KeyA');
@@ -121,19 +192,12 @@ async function resolveByTitle(page, title) {
 
   const matches = await page.evaluate((wanted) => {
     const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
-    const dialogs = [...document.querySelectorAll('[role="dialog"]')].filter((dialog) => {
-      const style = window.getComputedStyle(dialog);
-      return style.display !== 'none' && style.visibility !== 'hidden';
-    });
-    const roots = dialogs.length ? dialogs : [document];
     const found = [];
-    for (const root of roots) {
-      for (const anchor of root.querySelectorAll('a[href*="/c/"]')) {
-        const text = normalize(anchor.innerText || anchor.textContent || '');
-        const firstLine = normalize((anchor.innerText || anchor.textContent || '').split('\n')[0]);
-        if (text === wanted || firstLine === wanted || text.startsWith(`${wanted} `)) {
-          found.push({ text, href: anchor.href });
-        }
+    for (const anchor of document.querySelectorAll('a[href*="/c/"]')) {
+      const text = normalize(anchor.innerText || anchor.textContent || '');
+      const firstLine = normalize((anchor.innerText || anchor.textContent || '').split('\n')[0]);
+      if (text === wanted || firstLine === wanted || text.startsWith(`${wanted} `)) {
+        found.push({ text, href: anchor.href });
       }
     }
     return found;
