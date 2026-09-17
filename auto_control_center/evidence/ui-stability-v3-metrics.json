@@ -1,0 +1,79 @@
+{
+  "desktop-1440x1100": {
+    "vw": 1440,
+    "bodyScroll": 1440,
+    "workerCols": "677.5px 677.5px",
+    "connection": "● LIVE · Read-only",
+    "workers": 24,
+    "debugLeak": false
+  },
+  "iphone-393x852": {
+    "vw": 393,
+    "bodyScroll": 393,
+    "workerCols": "345px",
+    "connection": "● LIVE · Read-only",
+    "workers": 24,
+    "debugLeak": false
+  },
+  "iphone-wide-430x932": {
+    "vw": 430,
+    "bodyScroll": 430,
+    "workerCols": "382px",
+    "connection": "● LIVE · Read-only",
+    "workers": 24,
+    "debugLeak": false
+  },
+  "large": {
+    "vw": 1440,
+    "bodyScroll": 1440,
+    "workers": 80,
+    "events": 80,
+    "evidence": 80,
+    "wakes": 40,
+    "graphNodes": 19,
+    "graphNote": "Graph zeigt 18/36 Child-Goals; vollständiger Zustand bleibt im Ledger.",
+    "workerNote": "100 weitere Worker im Ledger — DOM bewusst begrenzt.",
+    "eventNote": "820 weitere Events im Ledger — DOM bewusst begrenzt."
+  },
+  "churn": {
+    "iterations": 72,
+    "largeNodeCounts": [
+      3599,
+      3599,
+      3599,
+      3599,
+      3599,
+      3599,
+      3599,
+      3599,
+      3599,
+      3599,
+      3599,
+      3599
+    ],
+    "largeStable": true,
+    "maxNodes": 3599
+  },
+  "idempotent": {
+    "before": [
+      80,
+      80,
+      19,
+      "STATE_CHANGED"
+    ],
+    "after": [
+      80,
+      80,
+      19,
+      "STATE_CHANGED"
+    ],
+    "equal": true
+  },
+  "truthful": {
+    "degraded": "● DEGRADED · Read-only",
+    "reconnect": "● Reconnecting · letzte Ansicht"
+  },
+  "staleVisible": false,
+  "empty": "Keine Worker registriert.",
+  "focusOutline": "solid"
+}
