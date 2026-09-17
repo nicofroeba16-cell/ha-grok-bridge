@@ -324,14 +324,12 @@ async function main() {
           'button[aria-label="Generierung stoppen"]',
           'button[aria-label="Antwortgenerierung beenden"]',
         ].join(','));
-        const sendButton = document.querySelector([
-          'button[data-testid="send-button"]',
-          'button[aria-label="Send prompt"]',
-          'button[aria-label="Senden"]',
-          'button[aria-label="Prompt senden"]',
+        const composer = document.querySelector([
+          '[data-testid="prompt-textarea"]',
+          '#prompt-textarea',
+          'textarea[data-testid="prompt-textarea"]',
         ].join(','));
-        const sendReady = !!sendButton && !sendButton.disabled && sendButton.getAttribute('aria-disabled') !== 'true';
-        return assistantCount > before && !stop && sendReady;
+        return assistantCount > before && !stop && !!composer;
       }, { timeout: 120000, polling: 300 }, { before: assistantTurnsBefore });
       await new Promise((resolve) => setTimeout(resolve, 1500));
       const stable = await page.evaluate(({ before }) => {
