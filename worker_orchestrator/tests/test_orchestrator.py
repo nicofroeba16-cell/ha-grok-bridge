@@ -393,6 +393,46 @@ class Harness(unittest.TestCase):
         self.assertEqual([(call[0], call[1]) for call in calls],
                          [(g.repository, 4), ("owner/master", 3)])
 
+    def test_terminal_statuses_mirror_to_both_destinations_idempotently(self):
+        for state, kind in (
+            ("READY", "WORKER_STATUS"),
+            ("DONE", "WORKER_DONE"),
+            ("WAITING_FOR_USER", "WORKER_STATUS"),
+            ("BLOCKED", "WORKER_STATUS"),
+        ):
+            with self.subTest(state=state):
+                g = self.goal(project=f"Terminal {state}", chat=state, workstream_issue=4)
+                calls = []
+                gh = type(
+                    "GitHub",
+                    (),
+                    {"post_issue_comment": lambda _, repo, issue, body: calls.append((repo, issue, body))},
+                )()
+                self.registry.upsert_goal(g)
+                self.registry.set_state(g.key, LifecycleState(state))
+                engine = Orchestrator(
+                    self.registry,
+                    ScriptedWorker([]),
+                    reporter=make_reporter(gh, "owner/master", 3),
+                )
+                payload = {
+                    "state": state,
+                    "evidence": {"mirror": "terminal"},
+                    "blockers": [],
+                    "user_action_required": [],
+                }
+                engine._report(kind, g, payload)
+                engine._report(kind, g, payload)
+                self.assertEqual(len(calls), 2)
+                self.assertEqual(
+                    [(repo, issue) for repo, issue, _ in calls],
+                    [(g.repository, 4), ("owner/master", 3)],
+                )
+                if kind == "WORKER_DONE":
+                    self.assertTrue(all(body.startswith("WORKER_DONE") for _, _, body in calls))
+                else:
+                    self.assertTrue(all(f"STATE: {state}" in body for _, _, body in calls))
+
     def test_partial_canonical_write_blocks_with_documentation_drift(self):
         g = self.goal(workstream_issue=4)
         calls = []

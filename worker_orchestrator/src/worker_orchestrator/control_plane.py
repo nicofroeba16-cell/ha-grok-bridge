@@ -74,6 +74,79 @@ def _hash(value: object) -> str:
     return sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
 
 
+def _strict_json_object(raw: str, *, context: str) -> object:
+    def unique_pairs(pairs):
+        result = {}
+        for key, value in pairs:
+            key = str(key)
+            if key in result:
+                raise MasterRequestError(f"{context} contains duplicate key: {key}")
+            result[key] = value
+        return result
+
+    try:
+        return json.loads(raw, object_pairs_hook=unique_pairs)
+    except json.JSONDecodeError as exc:
+        raise MasterRequestError(f"invalid {context}: {exc.msg}") from exc
+
+
+def _row_value(row: Mapping, key: str, default=""):
+    keys = row.keys() if hasattr(row, "keys") else ()
+    return row[key] if key in keys else default
+
+
+def classify_registry_rows(
+    worker_rows: Iterable[Mapping], worker_key: str, expected_version: str
+) -> tuple[Mapping | None, dict[str, object]]:
+    """Select one current row and classify stale/duplicate evidence fail-closed."""
+    matches = [row for row in worker_rows if str(_row_value(row, "worker_key")) == worker_key]
+    exact = [row for row in matches if str(_row_value(row, "goal_version")) == expected_version]
+    legacy = [
+        row
+        for row in matches
+        if str(_row_value(row, "goal_version")) != expected_version
+    ]
+    evidence: dict[str, object] = {
+        "classification": "MISSING" if not matches else "LEGACY_ONLY",
+        "matching_rows": len(matches),
+        "legacy_rows": len(legacy),
+        "duplicate_rows": max(0, len(exact) - 1),
+    }
+    if not exact:
+        return None, evidence
+
+    signatures = {
+        (
+            str(_row_value(row, "state")),
+            str(_row_value(row, "last_head")),
+            str(_row_value(row, "ci_status")),
+            str(_row_value(row, "goal_hash")),
+            str(_row_value(row, "workstream_issue")),
+        )
+        for row in exact
+    }
+    if len(signatures) > 1:
+        evidence["classification"] = "AMBIGUOUS_DUPLICATE"
+        return None, evidence
+
+    def rank(row: Mapping):
+        raw_source = _row_value(row, "source_comment_id", -1)
+        try:
+            source = int(raw_source) if raw_source is not None else -1
+        except (TypeError, ValueError):
+            source = -1
+        return (
+            source,
+            str(_row_value(row, "updated_at")),
+            str(_row_value(row, "goal_hash")),
+            str(_row_value(row, "state")),
+        )
+
+    active = max(exact, key=rank)
+    evidence["classification"] = "ACTIVE_WITH_DUPLICATES" if len(exact) > 1 else "ACTIVE"
+    return active, evidence
+
+
 def parse_master_request(text: str, source_comment_id: int | None = None) -> MasterRequest | None:
     if not text.lstrip().startswith("MASTER_REQUEST"):
         return None
@@ -217,7 +290,7 @@ class RouteRegistry:
     def from_json(cls, raw: str) -> "RouteRegistry":
         if not raw.strip():
             return cls()
-        value = json.loads(raw)
+        value = _strict_json_object(raw, context="CHAT_ROUTES_JSON")
         if not isinstance(value, Mapping):
             raise MasterRequestError("CHAT_ROUTES_JSON must be an object")
         routes: dict[str, ChatRoute] = {}
@@ -300,32 +373,40 @@ class MasterControlPlane:
         if request is None:
             return "IDLE"
         self._upsert_request(request)
-        worker_records = {str(row["worker_key"]): row for row in worker_rows}
+        worker_rows = list(worker_rows)
         child_states: dict[str, str] = {}
+        registry_blockers: dict[str, str] = {}
+        registry_classification: dict[str, dict[str, object]] = {}
         for child in request.children:
-            worker_row = worker_records.get(child.worker_key)
             expected_version = f"{request.version}-{child.child_id}"
-            worker_version = ""
-            if worker_row is not None:
-                keys = worker_row.keys() if hasattr(worker_row, "keys") else ()
-                if "goal_version" in keys:
-                    worker_version = str(worker_row["goal_version"])
-            state = (
-                str(worker_row["state"])
-                if worker_row is not None and (not worker_version or worker_version == expected_version)
-                else "ASSIGNED"
+            worker_row, classification = classify_registry_rows(
+                worker_rows, child.worker_key, expected_version
             )
+            registry_classification[child.child_id] = classification
+            if classification["classification"] == "AMBIGUOUS_DUPLICATE":
+                state = "BLOCKED"
+                registry_blockers[child.child_id] = "REGISTRY_DUPLICATE_AMBIGUOUS"
+            else:
+                state = str(worker_row["state"]) if worker_row is not None else "ASSIGNED"
             stored = self.connection.execute(
                 "SELECT dispatched, state FROM master_children WHERE request_id=? AND child_id=?",
                 (request.request_id, child.child_id),
             ).fetchone()
-            if stored and stored[0] and worker_row is None:
+            if (
+                stored and stored[0] and worker_row is None
+                and child.child_id not in registry_blockers
+            ):
                 state = str(stored[1])
             child_states[child.child_id] = state
 
         for child in request.children:
             if child_states[child.child_id] in {"DONE", "WAITING_FOR_USER", "BLOCKED", "STALLED"}:
-                self._set_child(request, child, child_states[child.child_id], "")
+                self._set_child(
+                    request,
+                    child,
+                    child_states[child.child_id],
+                    registry_blockers.get(child.child_id, ""),
+                )
                 continue
             if not all(child_states.get(dep) == "DONE" for dep in child.dependencies):
                 child_states[child.child_id] = "BLOCKED_DEPENDENCY"
@@ -364,6 +445,7 @@ class MasterControlPlane:
                     "SELECT blocker FROM master_children WHERE request_id=? AND blocker<>''", (request.request_id,)
                 )
             }),
+            "registry_classification": registry_classification,
         }
         self._report("MASTER_DONE" if state == "DONE" else "MASTER_STATUS", payload, request)
         return state

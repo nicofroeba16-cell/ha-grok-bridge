@@ -15,6 +15,7 @@ from typing import Callable, Iterable, Mapping
 from urllib.parse import urlparse
 
 from .control_plane import MasterRequestError, parse_master_request
+from .security import sanitize
 
 MASTER_ROUTE_KEY = "__master__"
 MASTER_RELEVANT_STATES = frozenset({"DONE", "BLOCKED", "WAITING_FOR_USER", "READY", "STALLED"})
@@ -62,14 +63,34 @@ class BrowserRouteRegistry:
 
     @classmethod
     def from_json(cls, raw: str) -> "BrowserRouteRegistry":
-        value = json.loads(raw)
+        def unique_pairs(pairs):
+            result = {}
+            for key, value in pairs:
+                key = str(key)
+                if key in result:
+                    raise BrowserWakeError(f"browser route registry contains duplicate key: {key}")
+                result[key] = value
+            return result
+
+        try:
+            value = json.loads(raw, object_pairs_hook=unique_pairs)
+        except json.JSONDecodeError as exc:
+            raise BrowserWakeError(f"invalid BROWSER_CHAT_ROUTES_JSON: {exc.msg}") from exc
         if not isinstance(value, Mapping):
             raise BrowserWakeError("BROWSER_CHAT_ROUTES_JSON must be an object")
         routes: dict[str, BrowserRoute] = {}
+        destinations: dict[str, str] = {}
         for key, config in value.items():
             if not isinstance(config, Mapping):
                 raise BrowserWakeError(f"browser route {key} must be an object")
-            routes[str(key)] = BrowserRoute(str(key), cls._validate_url(str(config.get("url", ""))))
+            route_key = str(key)
+            url = cls._validate_url(str(config.get("url", "")))
+            if url in destinations and destinations[url] != route_key:
+                raise BrowserWakeError(
+                    f"browser route destination is ambiguous for {route_key} and {destinations[url]}"
+                )
+            destinations[url] = route_key
+            routes[route_key] = BrowserRoute(route_key, url)
         return cls(routes)
 
     @classmethod
@@ -194,6 +215,43 @@ class WakeLedger:
         return self.connection.execute(
             "SELECT status,attempts,last_error FROM browser_wake_delivery WHERE message_id=?", (message_id,)
         ).fetchone()
+
+    def evaluate_delivery(self, message_id: str) -> dict[str, object]:
+        row = self.delivery(message_id)
+        if not row:
+            return {
+                "message_id": message_id,
+                "status": "MISSING",
+                "attempts": 0,
+                "automatic_retry": False,
+                "required_action": "NO_DELIVERY_RECORD",
+                "evidence": "",
+            }
+        status, attempts, last_error = str(row[0]), int(row[1]), str(row[2] or "")
+        actions = {
+            "DELIVERED": "NONE",
+            "FAILED_PRE_SEND": "RETRY_ALLOWED_BY_LEDGER",
+            "IN_FLIGHT": "WAIT_FOR_COMPLETION_OR_RESTART_RECOVERY",
+            "UNCERTAIN": "VERIFY_DESTINATION_BEFORE_MANUAL_RESOLUTION",
+            "BLOCKED": "OPERATOR_REVIEW_REQUIRED",
+        }
+        return {
+            "message_id": message_id,
+            "status": status,
+            "attempts": attempts,
+            "automatic_retry": status == "FAILED_PRE_SEND",
+            "required_action": actions.get(status, "OPERATOR_REVIEW_REQUIRED"),
+            "evidence": str(sanitize(last_error))[:240],
+        }
+
+    def uncertain_deliveries(self) -> list[dict[str, object]]:
+        ids = [
+            str(row[0])
+            for row in self.connection.execute(
+                "SELECT message_id FROM browser_wake_delivery WHERE status='UNCERTAIN' ORDER BY message_id"
+            )
+        ]
+        return [self.evaluate_delivery(message_id) for message_id in ids]
 
     def claim(self, message_id: str, route_key: str, max_attempts: int = 3) -> bool:
         row = self.delivery(message_id)
@@ -344,7 +402,13 @@ class WakeCoordinator:
     def reconcile(self, items: list[Mapping], *, replay_existing: bool = False) -> dict[str, int | str]:
         if not replay_existing and self.ledger.get_int("scan_cursor", 0) == 0:
             cursor = self.bootstrap(items)
-            return {"state": "BOOTSTRAPPED", "cursor": cursor, "worker_wakes": 0, "master_wakes": 0}
+            return {
+                "state": "BOOTSTRAPPED",
+                "cursor": cursor,
+                "worker_wakes": 0,
+                "master_wakes": 0,
+                "uncertain_deliveries": len(self.ledger.uncertain_deliveries()),
+            }
 
         cursor = self.ledger.get_int("scan_cursor", 0)
         ordered = sorted(
@@ -372,8 +436,11 @@ class WakeCoordinator:
         worker_wakes = self._flush_worker_pending()
         master_wakes = self._flush_master_pending()
         return {
-            "state": "OK", "cursor": max_seen,
-            "worker_wakes": worker_wakes, "master_wakes": master_wakes,
+            "state": "OK",
+            "cursor": max_seen,
+            "worker_wakes": worker_wakes,
+            "master_wakes": master_wakes,
+            "uncertain_deliveries": len(self.ledger.uncertain_deliveries()),
         }
 
     def _queue_request(self, body: str, event_id: int) -> None:

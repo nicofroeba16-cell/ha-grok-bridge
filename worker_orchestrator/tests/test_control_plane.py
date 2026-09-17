@@ -9,6 +9,7 @@ from worker_orchestrator.control_plane import (
     MasterControlPlane,
     MasterRequestError,
     RouteRegistry,
+    classify_registry_rows,
     parse_master_request,
 )
 
@@ -138,6 +139,46 @@ class ControlPlaneHarness(unittest.TestCase):
             ("synthetic-e2e", "source"),
         ).fetchone()
         self.assertEqual(row[0], "CHAT_ROUTE_UNBOUND")
+
+    def test_duplicate_route_keys_fail_closed(self):
+        key = "Projekt: Example → Chat: Source Worker"
+        raw = (
+            "{"
+            f'"{key}":{{"transport":"chat_relay","destination":"chat-route:a"}},'
+            f'"{key}":{{"transport":"chat_relay","destination":"chat-route:b"}}'
+            "}"
+        )
+        with self.assertRaises(MasterRequestError):
+            RouteRegistry.from_json(raw)
+
+    def test_registry_classifier_prefers_current_and_marks_legacy_duplicate_rows(self):
+        key = "Projekt: Example → Chat: Source Worker"
+        rows = [
+            self.row(key, "DONE", "older-goal"),
+            self.row(key, "DONE", "v1-source"),
+            self.row(key, "DONE", "v1-source"),
+        ]
+        active, evidence = classify_registry_rows(rows, key, "v1-source")
+        self.assertIsNotNone(active)
+        self.assertEqual(active["goal_version"], "v1-source")
+        self.assertEqual(evidence["classification"], "ACTIVE_WITH_DUPLICATES")
+        self.assertEqual(evidence["legacy_rows"], 1)
+        self.assertEqual(evidence["duplicate_rows"], 1)
+
+    def test_conflicting_duplicate_current_rows_block_without_redispatch(self):
+        key = "Projekt: Example → Chat: Source Worker"
+        rows = [
+            self.row(key, "DONE", "v1-source"),
+            self.row(key, "RUNNING", "v1-source"),
+        ]
+        state = self.control.reconcile([self.item()], rows)
+        self.assertEqual(state, "BLOCKED")
+        self.assertEqual(self.dispatched, [])
+        blocker = self.conn.execute(
+            "SELECT blocker FROM master_children WHERE request_id=? AND child_id=?",
+            ("synthetic-e2e", "source"),
+        ).fetchone()[0]
+        self.assertEqual(blocker, "REGISTRY_DUPLICATE_AMBIGUOUS")
 
     def test_waiting_for_user_is_global_gate(self):
         source = "Projekt: Example → Chat: Source Worker"

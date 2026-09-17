@@ -92,6 +92,25 @@ class BrowserWakeTests(unittest.TestCase):
         with self.assertRaises(BrowserWakeError):
             BrowserRouteRegistry.from_json('{"x":{"url":"https://example.com/c/a"}}')
 
+    def test_duplicate_or_ambiguous_browser_routes_fail_closed(self):
+        duplicate_key = (
+            "{"
+            f'"{WORKER_KEY}":{{"url":"{WORKER_URL}"}},'
+            f'"{WORKER_KEY}":{{"url":"{MASTER_URL}"}}'
+            "}"
+        )
+        with self.assertRaises(BrowserWakeError):
+            BrowserRouteRegistry.from_json(duplicate_key)
+
+        duplicate_destination = (
+            "{"
+            f'"{WORKER_KEY}":{{"url":"{WORKER_URL}"}},'
+            f'"Projekt: Other → Chat: Worker":{{"url":"{WORKER_URL}"}}'
+            "}"
+        )
+        with self.assertRaises(BrowserWakeError):
+            BrowserRouteRegistry.from_json(duplicate_destination)
+
     def test_first_start_bootstraps_without_waking_historical_events(self):
         sender = RecordingSender()
         coord = self.coordinator(sender)
@@ -157,8 +176,19 @@ class BrowserWakeTests(unittest.TestCase):
         coord.reconcile(items, replay_existing=True)
         coord.reconcile(items, replay_existing=True)
         self.assertEqual(len(calls), 1)
-        row = coord.ledger.delivery("worker-wake:req-1:v1:child")
+        message_id = "worker-wake:req-1:v1:child"
+        row = coord.ledger.delivery(message_id)
         self.assertEqual(row[0], "UNCERTAIN")
+        evidence = coord.ledger.evaluate_delivery(message_id)
+        self.assertFalse(evidence["automatic_retry"])
+        self.assertEqual(
+            evidence["required_action"],
+            "VERIFY_DESTINATION_BEFORE_MANUAL_RESOLUTION",
+        )
+        self.assertIn("click may already have happened", evidence["evidence"])
+        result = coord.reconcile(items, replay_existing=True)
+        self.assertEqual(result["uncertain_deliveries"], 1)
+        self.assertEqual(len(coord.ledger.uncertain_deliveries()), 1)
 
     def test_two_worker_statuses_batch_into_exactly_one_master_wake(self):
         sender = RecordingSender()
