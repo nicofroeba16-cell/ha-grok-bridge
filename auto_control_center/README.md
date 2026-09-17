@@ -56,6 +56,26 @@ The v3 refinement pass keeps the same read-only API while reducing UI noise and 
 
 The caps are presentation limits only. They do not truncate or mutate source ledgers.
 
+## v4 product UI refinement
+
+v4 keeps every v3 safety/stability invariant but changes the operator presentation so important state is reached faster:
+
+- a sticky anchor navigation links Overview, Worker, Evidence, Activity and System without adding any mutation action
+- the Master card no longer stretches to match a taller attention panel; it uses its own intrinsic height and adds compact progress/update facts
+- attention is explicitly triaged: `WAITING_FOR_USER` first, then `ERROR`, `BLOCKED`/`STALLED`, followed by degraded-source, uncertain-delivery and stale-evidence signals
+- the six operational counters are compact signals rather than large dashboard cards; on iPhone widths they become an internally scrollable strip instead of consuming multiple rows
+- desktop worker density increases from two to three columns at wide width, while medium remains two columns and iPhone remains one column
+- worker cards keep state/goal/actionable notices visible and move repository/branch/HEAD/CI/raw worker report evidence behind progressive disclosure
+- evidence older than 24 hours is marked `STALE >24H` from the source `updated_at` timestamp; the threshold is explicit and does not alter resolved state
+- logical SSE idempotence ignores only the generated health timestamp, so an otherwise unchanged payload does not rebuild the worker DOM every refresh
+- empty, degraded and reconnect copy remains explicit and read-only; no state is inferred as healthy/READY from missing evidence
+
+### Before / after rationale
+
+The v3 acceptance screenshot showed a large empty Master/Goal surface because the hero grid stretched the shorter Master card to the height of the attention list, six large statistic cards consumed a full row, and desktop workers used only two columns. On iPhone, the first worker card began below the initial viewport, making triage depend on long vertical scanning.
+
+v4 removes the stretch, adds operator anchors, compresses status into a mobile-scrollable signal strip, prioritizes action-required rows, and uses three desktop worker columns. Evidence remains available through `Evidence details`; no source row is collapsed or canonicalized. This is a presentation change only: state precedence, redaction, route minimization, read-only API surface, loopback launcher and large-data caps are unchanged.
+
 ## Deterministic simulation harness
 
 `auto_control_center/simulation.py` creates sanitized, deterministic payloads for isolated stability testing. `simulation_matrix()` provides:

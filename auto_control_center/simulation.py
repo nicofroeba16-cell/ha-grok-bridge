@@ -199,8 +199,8 @@ def build_simulation(
         "health": health,
         "master": {
             "request_id": "sim-master",
-            "version": "simulation-v3",
-            "request_text": "Stability simulation — evidence-first Control Center",
+            "version": "product-ui-v4",
+            "request_text": "Product UI simulation — evidence-first operator Control Center",
             "done_criteria": ["state churn", "large data", "visual acceptance"],
             "state": "RUNNING" if source_ok else "BLOCKED",
             "updated_at": _iso(0),
