@@ -298,10 +298,25 @@ async function main() {
       throw new Error('post-send delivery could not be verified in ChatGPT conversation');
     }
 
+    // A newly-rendered user turn can be optimistic UI only. Require persistence
+    // across a full reload before declaring delivery successful.
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    try {
+      await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 });
+      await page.waitForFunction((expected) => {
+        const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+        return [...document.querySelectorAll('[data-message-author-role="user"]')]
+          .some((turn) => normalize(turn.innerText || turn.textContent || '').includes(expected));
+      }, { timeout: 15000, polling: 250 }, expectedPayload);
+    } catch (_) {
+      throw new Error('post-send delivery was not persisted after ChatGPT reload');
+    }
+
     process.stdout.write(JSON.stringify({
       status: 'sent',
       message_id: request.messageId,
       delivery_verified: true,
+      persisted_after_reload: true,
       output_scraped: false,
     }) + '\n');
   } catch (error) {
