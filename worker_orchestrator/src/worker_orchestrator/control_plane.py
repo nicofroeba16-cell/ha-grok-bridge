@@ -208,7 +208,7 @@ class ChatRoute:
 
 
 class RouteRegistry:
-    SUPPORTED = frozenset({"github_master", "outbox"})
+    SUPPORTED = frozenset({"github_master", "outbox", "chat_relay"})
 
     def __init__(self, routes: Mapping[str, ChatRoute] | None = None):
         self.routes = dict(routes or {})
@@ -232,6 +232,8 @@ class RouteRegistry:
                 raise MasterRequestError(f"route destination missing for {worker_key}")
             if transport == "github_master" and not re.fullmatch(r"issue:[1-9][0-9]*", destination):
                 raise MasterRequestError(f"invalid github_master destination for {worker_key}")
+            if transport == "chat_relay" and not destination.startswith("chat-route:"):
+                raise MasterRequestError(f"invalid chat_relay destination for {worker_key}")
             routes[str(worker_key)] = ChatRoute(str(worker_key), transport, destination)
         return cls(routes)
 
@@ -252,12 +254,14 @@ class MasterControlPlane:
         routes: RouteRegistry,
         *,
         github_dispatch: Callable[[str, str], None] | None = None,
+        relay_dispatch: Callable[[str, str, str], None] | None = None,
         outbox_path: str | Path | None = None,
         reporter: Callable[[str], None] | None = None,
     ):
         self.connection = connection
         self.routes = routes
         self.github_dispatch = github_dispatch
+        self.relay_dispatch = relay_dispatch
         self.outbox_path = Path(outbox_path) if outbox_path else None
         self.reporter = reporter
         self._migrate()
@@ -419,6 +423,10 @@ class MasterControlPlane:
             if not self.github_dispatch:
                 raise RuntimeError("github_master dispatcher is not configured")
             self.github_dispatch(route.destination, prompt)
+        elif route.transport == "chat_relay":
+            if not self.relay_dispatch:
+                raise RuntimeError("chat_relay dispatcher is not configured")
+            self.relay_dispatch(message_id, route.destination, prompt)
         elif route.transport == "outbox":
             if not self.outbox_path:
                 raise RuntimeError("outbox path is not configured")

@@ -153,6 +153,33 @@ class Registry:
     def list_all(self):
         return self.conn.execute("SELECT * FROM workers ORDER BY worker_key").fetchall()
 
+    def requeue_executor_failures(self) -> int:
+        """Clear executor-only failures when local worker execution is disabled."""
+        changed = 0
+        for row in self.list_all():
+            if row["state"] != LifecycleState.BLOCKED:
+                continue
+            blockers = list(json.loads(row["blockers"] or "[]"))
+            if "WORKER_EXECUTION_FAILED" not in blockers:
+                continue
+            self.set_state(
+                row["worker_key"],
+                LifecycleState.ASSIGNED,
+                blockers=[],
+                user_gate=[],
+                error_signature="",
+                unchanged_runs=0,
+                last_progress="Local worker executor disabled; awaiting external workstream execution.",
+            )
+            self.record_event(
+                row["worker_key"],
+                row["goal_version"],
+                "EXECUTOR_DISABLED_REQUEUE",
+                {"previous_blockers": blockers},
+            )
+            changed += 1
+        return changed
+
     def set_state(self, worker_key: str, state: LifecycleState, **fields) -> None:
         allowed = {
             "last_head", "ci_status", "blockers", "user_gate", "last_progress",

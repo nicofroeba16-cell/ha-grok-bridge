@@ -16,6 +16,18 @@ class WorkerAdapter(Protocol):
     def execute(self, goal: Goal, previous: dict, *, dry_run: bool) -> WorkerResult: ...
 
 
+class NoExecutionWorkerAdapter:
+    """Fail closed if execution is accidentally attempted in dispatch-only mode."""
+
+    def execute(self, goal: Goal, previous: dict, *, dry_run: bool) -> WorkerResult:
+        return WorkerResult(
+            error="WORKER_EXECUTOR_DISABLED",
+            blockers=("WORKER_EXECUTOR_DISABLED",),
+            progress="Local worker execution is disabled.",
+            next_step="Await external workstream execution.",
+        )
+
+
 class CommandWorkerAdapter:
     """Programmatic worker adapter. Browser/UI automation is intentionally unsupported."""
 

@@ -93,19 +93,21 @@ config_dir="$HOME/.config/worker-orchestrator"
 dropin_dir="$HOME/.config/systemd/user/$service_name.d"
 mkdir -p "$config_dir" "$dropin_dir"
 
-routes_json='{"Projekt: Master Autonomous Orchestration → Chat: Control Plane E2E":{"transport":"github_master","destination":"issue:3"}}'
-"$python_bin" - "$routes_json" "$config_dir/master-control.env" <<'PY'
-import json
+routes_source="$GITHUB_WORKSPACE/worker_orchestrator/config/chat-routes.json"
+routes_target="$config_dir/chat-routes.json"
+install -m 600 "$routes_source" "$routes_target"
+
+"$python_bin" - "$routes_target" "$config_dir/master-control.env" <<'PY'
 import os
 import sys
 import tempfile
 
-routes = json.loads(sys.argv[1])
+routes_file = sys.argv[1]
 target = sys.argv[2]
 payload = "\n".join([
     "MASTER_CONTROL_ENABLED=true",
     "MASTER_CONTROL_ISSUE=9",
-    "CHAT_ROUTES_JSON='" + json.dumps(routes, ensure_ascii=False, separators=(",", ":")) + "'",
+    f"CHAT_ROUTES_FILE={routes_file}",
     "",
 ])
 fd, temporary = tempfile.mkstemp(prefix="master-control.", dir=os.path.dirname(target), text=True)
@@ -130,6 +132,14 @@ printf '%s\n' \
   >"$dropin_tmp"
 chmod 600 "$dropin_tmp"
 mv -f "$dropin_tmp" "$dropin_dir/master-control.conf"
+trap - EXIT
+
+runtime_start="$HOME/.local/share/worker-orchestrator/start.sh"
+runtime_start_tmp="$(mktemp "$HOME/.local/share/worker-orchestrator/start.sh.XXXXXX")"
+trap 'rm -f "$runtime_start_tmp"' EXIT
+cp "$GITHUB_WORKSPACE/worker_orchestrator/scripts/start_dispatch_only.sh" "$runtime_start_tmp"
+chmod 700 "$runtime_start_tmp"
+mv -f "$runtime_start_tmp" "$runtime_start"
 trap - EXIT
 
 before_pid="$(systemctl --user show "$service_name" --property=MainPID --value)"
@@ -183,12 +193,32 @@ if environment.get("MASTER_CONTROL_ISSUE") != "9":
     raise SystemExit("MASTER_CONTROL_ISSUE is not effective")
 if environment.get("PYTHONPATH") != os.path.join(runtime_repo, "worker_orchestrator", "src"):
     raise SystemExit("The durable runtime source is not effective on PYTHONPATH")
-routes = json.loads(environment.get("CHAT_ROUTES_JSON", "{}"))
-key = "Projekt: Master Autonomous Orchestration → Chat: Control Plane E2E"
-if routes != {key: {"transport": "github_master", "destination": "issue:3"}}:
-    raise SystemExit("The exact production E2E route is not effective")
+if environment.get("WORKER_COMMAND"):
+    raise SystemExit("WORKER_COMMAND must be absent in dispatch-only production")
+routes_file = environment.get("CHAT_ROUTES_FILE", "")
+if not routes_file or not os.path.isfile(routes_file):
+    raise SystemExit("CHAT_ROUTES_FILE is not effective")
+with open(routes_file, encoding="utf-8") as handle:
+    routes = json.load(handle)
+if len(routes) != 18:
+    raise SystemExit(f"Unexpected chat route count: {len(routes)}")
+required_routes = {
+    "Projekt: HA Simulation → Chat: HA Testumgebung planen",
+    "Projekt: Drucker → Chat: Brother Companion planen",
+    "Projekt: Dashboards → Chat: Fire TV Medienkarte erweitern",
+    "Projekt: Mähroboter → Chat: Status Mähroboter Read only",
+    "Projekt: Health → Chat: Schlüsselinventur planen",
+    "Projekt: IOS App → Chat: iOS Admin Chat Status",
+    "Projekt: Run optimization → Chat: Stand zusammenfassen",
+}
+if not required_routes.issubset(routes):
+    raise SystemExit("Required visible chat routes are missing")
+if any(item.get("transport") != "chat_relay" for item in routes.values()):
+    raise SystemExit("Production chat routes must use chat_relay")
 
 cmdline = [x.decode(errors="replace") for x in open(f"/proc/{pid}/cmdline", "rb").read().split(b"\0") if x]
+if "--allow-non-dry-run" in cmdline:
+    raise SystemExit("Dispatch-only runtime must not use --allow-non-dry-run")
 db = environment.get("ORCHESTRATOR_DB", "")
 if not db and "--db" in cmdline:
     db = cmdline[cmdline.index("--db") + 1]

@@ -1,0 +1,74 @@
+{
+  "Projekt: HA Simulation → Chat: HA Testumgebung planen": {
+    "transport": "chat_relay",
+    "destination": "chat-route:ha-simulation/ha-testumgebung-planen"
+  },
+  "Projekt: Drucker → Chat: Brother Companion planen": {
+    "transport": "chat_relay",
+    "destination": "chat-route:drucker/brother-companion-planen"
+  },
+  "Projekt: Dashboards → Chat: Dashboard Projekt definieren": {
+    "transport": "chat_relay",
+    "destination": "chat-route:dashboards/dashboard-projekt-definieren"
+  },
+  "Projekt: Dashboards → Chat: LED TV Kopplung": {
+    "transport": "chat_relay",
+    "destination": "chat-route:dashboards/led-tv-kopplung"
+  },
+  "Projekt: Dashboards → Chat: Fire TV Medienkarte erweitern": {
+    "transport": "chat_relay",
+    "destination": "chat-route:dashboards/fire-tv-medienkarte-erweitern"
+  },
+  "Projekt: Mähroboter → Chat: Status Mähroboter Read only": {
+    "transport": "chat_relay",
+    "destination": "chat-route:maehroboter/status-maehroboter-read-only"
+  },
+  "Projekt: Health → Chat: Druckerfehler Magenta leer": {
+    "transport": "chat_relay",
+    "destination": "chat-route:health/druckerfehler-magenta-leer"
+  },
+  "Projekt: Health → Chat: Global Project Health Audit": {
+    "transport": "chat_relay",
+    "destination": "chat-route:health/global-project-health-audit"
+  },
+  "Projekt: Health → Chat: Schlüsselinventur planen": {
+    "transport": "chat_relay",
+    "destination": "chat-route:health/schluesselinventur-planen"
+  },
+  "Projekt: IOS App → Chat: iOS Admin Chat Status": {
+    "transport": "chat_relay",
+    "destination": "chat-route:ios-app/ios-admin-chat-status"
+  },
+  "Projekt: IOS App → Chat: Fire TV Appinstallation Status": {
+    "transport": "chat_relay",
+    "destination": "chat-route:ios-app/fire-tv-appinstallation-status"
+  },
+  "Projekt: IOS App → Chat: Run 24 Watch": {
+    "transport": "chat_relay",
+    "destination": "chat-route:ios-app/run-24-watch"
+  },
+  "Projekt: IOS App → Chat: GitHub Status Reporting": {
+    "transport": "chat_relay",
+    "destination": "chat-route:ios-app/github-status-reporting"
+  },
+  "Projekt: IOS App → Chat: Projekt Health Prompt": {
+    "transport": "chat_relay",
+    "destination": "chat-route:ios-app/projekt-health-prompt"
+  },
+  "Projekt: IOS App → Chat: UI Test Zuverlässigkeit": {
+    "transport": "chat_relay",
+    "destination": "chat-route:ios-app/ui-test-zuverlaessigkeit"
+  },
+  "Projekt: IOS App → Chat: Sicherheitsprüfung vorbereiten": {
+    "transport": "chat_relay",
+    "destination": "chat-route:ios-app/sicherheitspruefung-vorbereiten"
+  },
+  "Projekt: IOS App → Chat: Runner Steuerung einplanen": {
+    "transport": "chat_relay",
+    "destination": "chat-route:ios-app/runner-steuerung-einplanen"
+  },
+  "Projekt: Run optimization → Chat: Stand zusammenfassen": {
+    "transport": "chat_relay",
+    "destination": "chat-route:run-optimization/stand-zusammenfassen"
+  }
+}

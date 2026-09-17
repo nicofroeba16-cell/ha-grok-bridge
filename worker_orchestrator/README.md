@@ -33,6 +33,25 @@ SQLite/WAL stores:
 
 A process restart converts an interrupted RUNNING worker back to ASSIGNED for safe reconciliation. READY, DONE, WAITING_FOR_USER and STALLED remain dormant until a materially changed goal is ingested. BLOCKED workers also remain dormant for worker execution; retryable external CI-verification blockers are rechecked during reconciliation without spawning a worker, and a newly GREEN exact-head check can complete the stored goal directly or re-assign it once if technical criteria still remain.
 
+## Dispatch-only mode and chat relay
+
+The production runner may operate without a local worker executor. When
+`WORKER_COMMAND` is unset, goals are ingested, deduplicated, reconciled and
+reported, but no local AI/code worker is launched. Historical executor-only
+failures are re-queued as assignments awaiting the external workstream.
+
+Exact Master-to-chat delivery uses the `chat_relay` route transport. Each
+delivery carries a deterministic `message_id` and the same value as the HTTP
+`Idempotency-Key`. Route destinations are logical IDs beginning with
+`chat-route:`; the relay implementation is responsible for mapping those IDs
+to an authorized messaging surface. Non-loopback relay endpoints require HTTPS.
+
+The canonical route registry is `config/chat-routes.json`. A production
+installation should set `CHAT_ROUTES_FILE` to that deployed registry and may
+set `CHAT_RELAY_URL` plus an optional `CHAT_RELAY_TOKEN`. If no authorized
+relay endpoint is configured, `chat_relay` delivery fails closed and is never
+treated as delivered.
+
 ## Assignment format
 
 A structured assignment may use separate fields:

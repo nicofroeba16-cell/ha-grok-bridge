@@ -256,6 +256,22 @@ class Harness(unittest.TestCase):
         self.assertEqual(engine.reconcile_external_blockers(), 0)
         self.assertEqual(self.registry.get(g.key)["state"], LifecycleState.BLOCKED)
 
+    def test_executor_failures_requeue_when_execution_disabled(self):
+        g = self.goal(project="Dispatch Only", chat="External Worker")
+        self.registry.upsert_goal(g)
+        self.registry.set_state(
+            g.key,
+            LifecycleState.BLOCKED,
+            blockers=["WORKER_EXECUTION_FAILED", "codex worker failed with exit code 1"],
+            error_signature="executor-failure",
+            execution_count=1,
+        )
+        self.assertEqual(self.registry.requeue_executor_failures(), 1)
+        row = self.registry.get(g.key)
+        self.assertEqual(row["state"], LifecycleState.ASSIGNED)
+        self.assertEqual(json.loads(row["blockers"]), [])
+        self.assertIn("awaiting external", row["last_progress"].lower())
+
     def test_restart_recovers_running_worker(self):
         g = self.goal()
         self.registry.upsert_goal(g)
