@@ -2,7 +2,7 @@
 
 Local read-only visual control plane for the Master / Worker Orchestrator / Browser Wake stack.
 
-## v1/v2 read-only safety contract
+## Read-only safety contract
 
 The application has **no mutation endpoints**. It can read current state, but it cannot wake, retry, restart, merge, deploy, approve, rotate secrets, change devices, modify Home Assistant, or install/start services. The supported launcher binds to `127.0.0.1` only.
 
@@ -13,18 +13,20 @@ GitHub and the existing ledgers remain the source of truth. The UI never promote
 3. current failing CI state -> `BLOCKED`
 4. otherwise the current Orchestrator ledger state
 
-This implements the project rule **VERIFIED CURRENT STATE > worker report**. The UI labels its local worker/evidence source as `orchestrator_ledger`; it does not claim a GitHub verification that is not present in the ledger.
+This implements **VERIFIED CURRENT STATE > worker report**. A worker report remains explicitly labeled unverified in the UI.
 
 ## Registry drift and delivery semantics
 
 Registry rows are never silently collapsed. When two or more worker identities share the same `(repository, branch, goal_version)` target, every row remains visible and the UI marks the group as a **Shared Target**. This is drift evidence only: the Control Center does not infer which identity is canonical or legacy.
 
-Browser-Wake delivery states are also kept semantically distinct:
+Browser-Wake delivery states remain distinct:
 
 - verified/success-like delivery -> green
 - explicit failure/blocking -> red
-- `UNCERTAIN` -> amber and explicitly described as **not verified**, neither success nor failure
+- `UNCERTAIN` -> amber and explicitly described as not verified, neither success nor failure
 - cancelled/superseded -> neutral/muted
+
+Worker lifecycle states also retain dedicated treatment for `READY`, `RUNNING`, `BLOCKED`, `WAITING_FOR_USER`, `DONE`, `DORMANT` and `ERROR`.
 
 ## Data sources
 
@@ -32,25 +34,42 @@ All adapters are read-only:
 
 - Worker Orchestrator SQLite database via SQLite URI `mode=ro`
 - Browser Wake SQLite database via SQLite URI `mode=ro`
-- Browser Wake route registry; only binding kind is exposed, never the destination URL/title value
+- Browser Wake route registry; only binding kind is exposed, never destination URL/title values
 - `systemctl --user show` for selected service state
 
-The API intentionally does not expose configured filesystem paths. Route destinations are summarized, not returned. Text and structured data pass through recursive secret redaction before they reach the API/UI.
+The API does not expose configured filesystem paths. Text and structured data pass through recursive secret redaction before they reach the API/UI.
+
+## v3 UI stability model
+
+The v3 refinement pass keeps the same read-only API while reducing UI noise and bounding browser work:
+
+- Master/goal and current attention items are shown first
+- worker cards show state/goal immediately; operational metadata and worker prose are collapsed under **Details**
+- Shared-Target drift remains visible but secondary
+- identical SSE payloads are not re-rendered
+- client DOM rendering is capped at 80 workers, 80 evidence rows, 80 events, 40 wake rows, 80 routes and 18 graph children
+- overflow copy states how many additional records remain in the authoritative ledger
+- reconnect preserves the last rendered view and says `Reconnecting · letzte Ansicht`
+- unreadable/missing sources render `DEGRADED · Read-only`; they never imply healthy/READY state
+- mobile layout keeps one worker column and body-width containment while the dependency graph scrolls internally
+- `:focus-visible` and reduced-motion behavior are included
+
+The caps are presentation limits only. They do not truncate or mutate source ledgers.
+
+## Deterministic simulation harness
+
+`auto_control_center/simulation.py` creates sanitized, deterministic payloads for isolated stability testing. `simulation_matrix()` provides:
+
+- `mixed`: lifecycle and wake-state churn
+- `partial`: missing/partial worker fields
+- `degraded`: unavailable/read-only source health
+- `stale`: intentionally old worker evidence timestamps
+- `empty`: empty-state rendering
+- `large`: 180 workers, 900 events, 500 wake deliveries and more graph children than the UI presentation cap
+
+The simulation includes Shared-Target aliases, independent CI-failure precedence, dedicated `ERROR`, secret-like sample material that must be redacted, and minimized route records. It never opens or writes the real Orchestrator or Browser-Wake ledgers.
 
 ## UI / API
-
-The responsive desktop/iPhone dashboard provides:
-
-- Master/goal overview and progress
-- visual child/dependency graph
-- worker cards with resolved state, goal, repo, branch, issue, HEAD, CI, blockers and user gates
-- explicit Shared-Target registry-drift indicators without canonical inference
-- event timeline
-- Browser Wake delivery/queue status with distinct uncertain/failure/success/cancelled semantics
-- Evidence/CI overview from current ledger fields
-- route-binding summary
-- source and service health
-- live refresh over Server-Sent Events
 
 Read-only endpoints:
 
@@ -92,22 +111,12 @@ Do not launch this version with a public bind such as `0.0.0.0`.
 - `ACC_SYSTEMD_SERVICES`
 - `ACC_PORT`
 
-No token or secret environment variable is required by this MVP.
+No token or secret environment variable is required.
 
-## Tests and acceptance
+## Tests and visual acceptance
 
-The test suite covers:
+The suite covers adapters/no-write behavior, route minimization, secret redaction, state/CI precedence, Shared-Target preservation, wake classes, loopback-only launch, read-only API surface, simulation scenarios and responsive/stability UI contracts.
 
-- SQLite adapters and byte-for-byte no-write behavior
-- route destination minimization
-- recursive secret redaction
-- state precedence and CI mapping
-- registry shared-target preservation without canonical inference
-- distinct Browser-Wake status classes, including `UNCERTAIN`
-- loopback-only launcher behavior
-- API surface (GET/HEAD only) and required endpoints
-- responsive desktop/iPhone visual contracts
+Visual acceptance is performed only in an isolated browser with simulation payloads. Required target viewports are desktop `1440x1100`, iPhone `393x852`, plus a wider modern-iPhone sanity width. Large-data and repeated-render checks verify bounded DOM size and idempotent rendering. This is not a live deployment.
 
-Visual acceptance can be performed in an isolated browser using safe representative records derived from read-only runner data. This does not install or start the Control Center on the runner and must not be described as a live deployment.
-
-No existing Orchestrator, Browser Wake, Home Assistant, service, device or secret state is mutated by these tests.
+No existing Orchestrator, Browser Wake, Home Assistant, service, device, route or secret state is mutated by these tests.
