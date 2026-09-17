@@ -63,6 +63,17 @@ class SimulationHarnessTests(unittest.TestCase):
         self.assertNotIn("https://", serialized)
         self.assertTrue(all(set(row) == {"worker_key", "bound", "destination_kind"} for row in payload["routes"]))
 
+    def test_realistic_fixture_uses_current_source_shaped_names_and_long_goals(self):
+        payload = build_simulation(worker_count=24)
+        chats = {row["chat"] for row in payload["workers"]}
+        self.assertIn("AUTO - iOS Owner Fix", chats)
+        self.assertIn("Status Mähroboter Read only", chats)
+        self.assertIn("AUTO - Control Center", chats)
+        self.assertTrue(any(len(str(row.get("goal_version") or "")) > 30 for row in payload["workers"]))
+        self.assertTrue(any(row.get("registry_shared_target") for row in payload["workers"]))
+        self.assertTrue(any(len(" ".join(row.get("blockers") or [])) > 80 for row in payload["workers"]))
+        self.assertNotIn("simulation", payload["master"]["request_text"].lower())
+
     def test_large_payload_counts_remain_truthful(self):
         payload = build_simulation(worker_count=180, event_count=900, wake_count=500, partial=True, stale=True)
         self.assertEqual(payload["stats"]["workers"], 180)

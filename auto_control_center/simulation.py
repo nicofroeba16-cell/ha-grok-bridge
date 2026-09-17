@@ -25,6 +25,29 @@ WAKE_STATES = (
     "SUPERSEDED",
 )
 
+REALISTIC_WORKERS = (
+    {"project":"Auto Chat","chat":"AUTO - iOS","goal":"native-ios-delivery-master-v1","repository":"nicofroeba16-cell/ha-ios-next-ios","branch":"codex/ci-runtime-fullgate-reconciled"},
+    {"project":"Auto Chat","chat":"AUTO - iOS Owner Fix","goal":"native-ios-owner-xcode27-compile-fix-v1","repository":"nicofroeba16-cell/ha-ios-next-ios","branch":"codex/owner-ticket-security"},
+    {"project":"Dashboards","chat":"Fire TV Medienkarte erweitern","goal":"firetv-runtime-source-reconcile-v2","repository":"nicofroeba16-cell/AmazonTV-App","branch":"feat/firetv-device-controls-v2"},
+    {"project":"AmazonTV-App / Fire TV Companion v2","chat":"Fire TV Medienkarte erweitern","goal":"firetv-runtime-source-reconcile-v2","repository":"nicofroeba16-cell/AmazonTV-App","branch":"feat/firetv-device-controls-v2"},
+    {"project":"Brother Printer Companion","chat":"Brother Companion planen","goal":"brother-v0.3-status-normalization-final-v2","repository":"nicofroeba16-cell/Brother-Printer-Companion","branch":"develop/status-normalization"},
+    {"project":"Drucker","chat":"Brother Companion planen","goal":"brother-v0.3-status-normalization-final-v2","repository":"nicofroeba16-cell/Brother-Printer-Companion","branch":"develop/status-normalization"},
+    {"project":"Health","chat":"Global Project Health Audit","goal":"global-health-revalidation-v2","repository":"nicofroeba16-cell/ha-grok-bridge","branch":"main"},
+    {"project":"Health","chat":"Schlüsselinventur planen","goal":"key-secret-inventory-readonly-v2","repository":"nicofroeba16-cell/ha-grok-bridge","branch":"main"},
+    {"project":"IOS App","chat":"UI Test Zuverlässigkeit","goal":"native-ios-visual-iphone18-target-v1","repository":"nicofroeba16-cell/ha-ios-next-ios","branch":"codex/visual-acceptance-reliability"},
+    {"project":"Auto Chat","chat":"AUTO - iOS Visual Acceptance","goal":"native-ios-visual-iphone18-target-v1","repository":"nicofroeba16-cell/ha-ios-next-ios","branch":"codex/visual-acceptance-reliability"},
+    {"project":"Mähroboter","chat":"Status Mähroboter Read only","goal":"mammotion-5004-raw-positioning-v2","repository":"nicofroeba16-cell/ha-grok-bridge","branch":"main"},
+    {"project":"HA Simulation","chat":"HA Testumgebung planen","goal":"mammotion-beta11-simulation-refresh-v1","repository":"nicofroeba16-cell/ha-grok-bridge-live","branch":"main"},
+    {"project":"Master Chat Bridge","chat":"Master-Verteilung","goal":"master-chat-bridge-e2e-v1","repository":"nicofroeba16-cell/ha-grok-bridge","branch":"fix/worker-orchestrator-runtime-hardening"},
+    {"project":"Master Autonomous Orchestration","chat":"Runner Control Plane Cutover","goal":"master-control-plane-cutover-v4","repository":"nicofroeba16-cell/ha-grok-bridge","branch":"main"},
+    {"project":"Worker Orchestrator","chat":"Runner Worker Orchestrator","goal":"docs-freshness-v4-final","repository":"nicofroeba16-cell/ha-grok-bridge","branch":"fix/worker-orchestrator-runtime-hardening"},
+    {"project":"Worker Orchestrator","chat":"Runner Docs Freshness E2E","goal":"docs-freshness-e2e-v1","repository":"nicofroeba16-cell/ha-grok-bridge","branch":"fix/worker-orchestrator-runtime-hardening"},
+    {"project":"Worker Orchestrator","chat":"Runner E2E Smoke","goal":"runtime-e2e-v6","repository":"nicofroeba16-cell/ha-grok-bridge","branch":"fix/worker-orchestrator-runtime-hardening"},
+    {"project":"Auto Chat","chat":"AUTO - Control Center","goal":"auto-control-center-final-polish-v5","repository":"nicofroeba16-cell/ha-grok-bridge","branch":"feature/auto-control-center-readonly-v1"},
+    {"project":"Master Autonomous Orchestration","chat":"Control Plane E2E","goal":"production-e2e-v1-control-plane-e2e","repository":"nicofroeba16-cell/ha-grok-bridge","branch":"feat/master-autonomous-orchestration","blocker":"Runtime filesystem is read-only outside the assigned workspace, so the gated cutover cannot proceed without explicit approval and a writable runtime path."},
+    {"project":"IOS App","chat":"iOS Admin Chat Status","goal":"native-ios-owner-xcode27-compile-fix-v1","repository":"nicofroeba16-cell/ha-ios-next-ios","branch":"codex/owner-ticket-security"},
+)
+
 
 def _iso(minutes_ago: int) -> str:
     stamp = datetime(2026, 9, 17, 18, 0, tzinfo=timezone.utc) - timedelta(minutes=minutes_ago)
@@ -32,13 +55,22 @@ def _iso(minutes_ago: int) -> str:
 
 
 def _worker(index: int, state: str, *, partial: bool = False, stale: bool = False) -> dict[str, Any]:
-    shared_pair = index in {2, 3, 8, 9}
-    pair_root = 2 if index in {2, 3} else 8 if index in {8, 9} else index
-    repository = f"example/control-{pair_root % 6}"
-    branch = f"feature/sim-{pair_root % 5}"
-    goal_version = f"sim-goal-{pair_root % 7}-v1"
-    blockers = ["Dependency evidence is still missing"] if state == "BLOCKED" else []
-    user_gate = ["Explicit user approval required"] if state == "WAITING_FOR_USER" else []
+    fixture = REALISTIC_WORKERS[index % len(REALISTIC_WORKERS)]
+    cycle = index // len(REALISTIC_WORKERS)
+    repository = fixture["repository"]
+    branch = fixture["branch"]
+    goal_version = fixture["goal"]
+    if cycle:
+        suffix = f"-fixture-{cycle}"
+        branch = f"{branch}{suffix}"
+        goal_version = f"{goal_version}{suffix}"
+    blockers = []
+    if state == "BLOCKED":
+        blockers = [
+            fixture.get("blocker")
+            or "Current dependency evidence is incomplete; review the source-backed blocker before the next gated step."
+        ]
+    user_gate = ["Explicit approval is required before the next gated integration step."] if state == "WAITING_FOR_USER" else []
     if state in {"DONE", "READY"}:
         ci_status = "GREEN"
     elif state == "ASSIGNED" and index % 16 == 7:
@@ -47,9 +79,9 @@ def _worker(index: int, state: str, *, partial: bool = False, stale: bool = Fals
         ci_status = "UNKNOWN"
     updated_at = "2026-08-01T00:00:00+00:00" if stale and index % 3 == 0 else _iso(index * 7)
     row: dict[str, Any] = {
-        "worker_key": f"Projekt: Simulation → Chat: Worker {index:03d}",
-        "project": "Simulation",
-        "chat": f"Worker {index:03d}",
+        "worker_key": f"Projekt: {fixture['project']} → Chat: {fixture['chat']} · fixture-{index:03d}",
+        "project": fixture["project"],
+        "chat": fixture["chat"],
         "repository": repository,
         "branch": branch,
         "workstream_issue": 100 + index,
@@ -59,15 +91,13 @@ def _worker(index: int, state: str, *, partial: bool = False, stale: bool = Fals
         "ci_status": ci_status,
         "blockers": blockers,
         "user_gate": user_gate,
-        "last_progress": "Representative worker report",
+        "last_progress": "Latest worker report is present; treat it as unverified until source evidence confirms it.",
         "verified_criteria": ["scope", "tests"] if index % 3 else ["scope"],
         "done_criteria": ["scope", "tests", "visual"],
         "updated_at": updated_at,
     }
     if index == 1:
         row["last_progress"] = "Bearer abcdefghijklmnop github_pat_abcdefghijklmnopqrstuv"
-    if shared_pair:
-        row["project"] = "Legacy Simulation" if index % 2 else "Simulation"
     if partial:
         if index % 4 == 0:
             row["last_head"] = None
@@ -199,8 +229,8 @@ def build_simulation(
         "health": health,
         "master": {
             "request_id": "sim-master",
-            "version": "product-ui-v4",
-            "request_text": "Product UI simulation — evidence-first operator Control Center",
+            "version": "current-view-v5",
+            "request_text": "Current orchestration state — evidence-first operator control",
             "done_criteria": ["state churn", "large data", "visual acceptance"],
             "state": "RUNNING" if source_ok else "BLOCKED",
             "updated_at": _iso(0),

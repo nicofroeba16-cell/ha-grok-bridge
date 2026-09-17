@@ -76,6 +76,24 @@ The v3 acceptance screenshot showed a large empty Master/Goal surface because th
 
 v4 removes the stretch, adds operator anchors, compresses status into a mobile-scrollable signal strip, prioritizes action-required rows, and uses three desktop worker columns. Evidence remains available through `Evidence details`; no source row is collapsed or canonicalized. This is a presentation change only: state precedence, redaction, route minimization, read-only API surface, loopback launcher and large-data caps are unchanged.
 
+## v5 final product polish
+
+The v5 surface keeps the same read-only API and source-of-truth rules, but presents the data as an operator product rather than a test dashboard:
+
+- five-section navigation becomes a thumb-friendly segmented tab bar on iPhone and tracks the active section
+- raw source enums are mapped to human presentation labels; raw/internal values remain available only in evidence details
+- attention is ordered as user action -> error -> blocked/stalled -> degraded source -> uncertain delivery -> stale evidence
+- mobile operational signals use a deliberate 3x2 compact grid with no clipped-card affordance
+- worker cards stay compact for healthy states while problem workers keep the current action visible
+- client-only worker search, state filters and **Only problems** never mutate source state
+- Evidence rows show CI, short HEAD and source freshness before any worker detail is opened
+- global degraded/offline/reconnecting states are explicit and preserve the last view
+- relative times are shown on the surface while exact timestamps stay available in title/detail text
+
+The deterministic fixture set uses current read-only worker naming and source shape (including long goals, shared targets and a long blocker) captured from the runner without writing the real ledger. Source-derived project names are intentionally preserved even when they contain words such as “Simulation”.
+
+Final v5 acceptance covers 1440x1100, 393x852 and 430x932, worker search/filter/Only-problems, expand/collapse, attention changes, degraded/reconnect, reduced motion, large-data caps, idempotence and 72 refresh/churn iterations. Screenshots, interaction GIF and machine-readable metrics live under `auto_control_center/evidence/`.
+
 ## Deterministic simulation harness
 
 `auto_control_center/simulation.py` creates sanitized, deterministic payloads for isolated stability testing. `simulation_matrix()` provides:
