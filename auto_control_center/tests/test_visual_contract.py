@@ -91,10 +91,28 @@ class VisualContractTests(unittest.TestCase):
         self.assertIn('role="img"', self.html)
         self.assertIn('aria-label="Master goal dependency graph"', self.html)
 
-    def test_read_only_contract_remains_visible_and_no_mutation_fetch_exists(self):
-        self.assertIn("READ-ONLY v5", self.html)
-        for verb in ("retry", "restart", "deploy", "merge", "approve", "delete", "wake"):
-            self.assertNotIn(f"fetch('/api/{verb}", self.html)
+    def test_guarded_wake_all_ui_requires_preview_and_confirmation(self):
+        self.assertIn('id="wakeAllButton"', self.html)
+        self.assertIn('Alle Worker aufwecken', self.html)
+        self.assertIn("fetch('/api/actions/wake-all/preview'", self.html)
+        self.assertIn("fetch('/api/actions/wake-all/submit'", self.html)
+        self.assertIn('id="wakeConfirmCheck" type="checkbox"', self.html)
+        self.assertIn("'X-CSRF-Token':wakePreview.csrf_token", self.html)
+        self.assertIn("wakeSubmitting", self.html)
+        self.assertIn("idempotency_key:wakePreview.idempotency_key", self.html)
+
+    def test_wake_all_preserves_v5_layout_and_default_disabled_copy(self):
+        self.assertIn("READ-ONLY DATA v5", self.html)
+        self.assertIn("guarded wake action is disabled by default", self.html)
+        self.assertIn("ACC_WAKE_ALL_ENABLED=1", self.html)
+        self.assertIn("@media(max-width:650px){.section-actions", self.html)
+        self.assertIn(".wake-lists{grid-template-columns:1fr", self.html)
+
+    def test_no_generic_command_or_direct_chatgpt_automation_exists(self):
+        self.assertNotIn("fetch('/api/command", self.html)
+        self.assertNotIn("chatgpt.com", self.html)
+        self.assertNotIn("document.execCommand", self.html)
+
 
 
 if __name__ == "__main__":

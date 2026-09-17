@@ -1,10 +1,10 @@
 # AUTO Control Center
 
-Local read-only visual control plane for the Master / Worker Orchestrator / Browser Wake stack.
+Local evidence-first operator UI for the Master / Worker Orchestrator / Browser Wake stack.
 
-## Read-only safety contract
+## Safety contract
 
-The application has **no mutation endpoints**. It can read current state, but it cannot wake, retry, restart, merge, deploy, approve, rotate secrets, change devices, modify Home Assistant, or install/start services. The supported launcher binds to `127.0.0.1` only.
+The dashboard data plane remains read-only and the supported launcher binds to 127.0.0.1 only. One narrowly scoped optional mutation exists: the guarded Alle Worker aufwecken action may enqueue eligible workers into the canonical Browser-Wake pending queue. That capability is disabled by default and never changes worker goals or automates ChatGPT directly from the dashboard. Retry, restart, merge, deploy, approval, secret, Home Assistant, device, network and service-management actions remain unavailable.
 
 GitHub and the existing ledgers remain the source of truth. The UI never promotes prose such as `last_progress` into verified state. Display-state precedence is:
 
@@ -30,7 +30,7 @@ Worker lifecycle states also retain dedicated treatment for `READY`, `RUNNING`, 
 
 ## Data sources
 
-All adapters are read-only:
+Normal dashboard adapters are read-only:
 
 - Worker Orchestrator SQLite database via SQLite URI `mode=ro`
 - Browser Wake SQLite database via SQLite URI `mode=ro`
@@ -148,13 +148,76 @@ Do not launch this version with a public bind such as `0.0.0.0`.
 - `ACC_BROWSER_ROUTES`
 - `ACC_SYSTEMD_SERVICES`
 - `ACC_PORT`
+- ACC_WAKE_ALL_ENABLED (default off)
+- ACC_MASTER_REF (wake payload master reference only)
 
 No token or secret environment variable is required.
 
 ## Tests and visual acceptance
 
-The suite covers adapters/no-write behavior, route minimization, secret redaction, state/CI precedence, Shared-Target preservation, wake classes, loopback-only launch, read-only API surface, simulation scenarios and responsive/stability UI contracts.
+The approved v5 baseline suite covered adapters/no-write behavior, route minimization, secret redaction, state/CI precedence, Shared-Target preservation, wake classes, loopback-only launch, simulation scenarios and responsive/stability UI contracts.
 
-Visual acceptance is performed only in an isolated browser with simulation payloads. Required target viewports are desktop `1440x1100`, iPhone `393x852`, plus a wider modern-iPhone sanity width. Large-data and repeated-render checks verify bounded DOM size and idempotent rendering. This is not a live deployment.
+The approved v5 visual acceptance was performed in an isolated browser with simulation payloads at desktop 1440x1100, iPhone 393x852 and a wider modern-iPhone width. Large-data and repeated-render checks verified bounded DOM size and idempotent rendering.
 
-No existing Orchestrator, Browser Wake, Home Assistant, service, device, route or secret state is mutated by these tests.
+No existing Orchestrator, Browser Wake, Home Assistant, service, device, route or secret state was mutated by the v5 acceptance. The additional guarded Wake-All acceptance is documented below.
+
+## Guarded Wake All v2
+
+Alle Worker aufwecken is a route-registry-driven operator action layered on the existing Browser-Wake queue contract.
+
+Safety and eligibility rules:
+
+- The master route is never included.
+- Worker names and counts are derived from the current worker ledger and route registry for every preview.
+- Missing, malformed or ambiguous routes and duplicate route destinations fail closed.
+- DONE workers are skipped unless the orchestrator has already materialized a new non-DONE state; the Control Center never invents that change.
+- Existing pending deliveries are skipped.
+- A latest UNCERTAIN delivery is skipped and is never automatically retried.
+- ASSIGNED, RUNNING, BLOCKED, WAITING_FOR_USER, READY, ERROR and STALLED may be explicitly re-awakened when all other safety checks pass.
+- Current project, chat and goal version are copied into the wake payload unchanged. The action never creates or broadens a goal.
+- Route destinations are used internally only and are not exposed by preview or result responses.
+
+Operator flow:
+
+1. Open Alle Worker aufwecken.
+2. Review routed, eligible and skipped counts plus exact skip reasons.
+3. Tick the explicit confirmation control.
+4. Submit the operation once. One idempotency key identifies the batch.
+5. Repeated submits with the same key are deduplicated. A reload/new preview sees already-pending workers as protected.
+6. The only write inserts deterministic messages into browser_wake_pending_worker.
+7. The existing Browser-Wake coordinator performs delivery.
+8. Result polling reports queued, verified, blocked, failed-pre-send and uncertain states from the canonical ledger without reading model output.
+
+Security model:
+
+- ACC_WAKE_ALL_ENABLED=1 explicitly enables the capability; absent or false means disabled.
+- The POST endpoint accepts loopback clients only and requires exact same-origin validation.
+- An operation-bound expiring CSRF token and matching HttpOnly SameSite cookie are required.
+- The preview hash includes worker, goal, state and an internal route-target fingerprint, so route drift forces a new preview.
+- Control-plane/source failures fail closed and there is no fallback sender.
+- No route destination, token, secret, sensitive local path or browser profile data is exposed.
+- Enabling the capability in a production runtime remains a separate live-system approval.
+
+Additional action endpoints:
+
+- GET /api/actions/wake-all/preview
+- GET /api/actions/wake-all/result
+- POST /api/actions/wake-all/submit
+
+The POST endpoint is the only mutating HTTP surface and is disabled by default. There is no generic command or direct ChatGPT automation endpoint.
+
+Optional local capability enablement, only after separate runtime approval:
+
+    ACC_WAKE_ALL_ENABLED=1 python -m auto_control_center
+
+The launcher still binds only to 127.0.0.1. Enabling Wake All does not authorize starting or restarting Browser-Wake services or changing production route/runtime configuration.
+
+## Wake All test and acceptance model
+
+The Wake-All unit suite uses temporary SQLite and route fixtures for eligibility, skip reasons, DONE protection, pending and UNCERTAIN protection, stale-preview detection, idempotency, concurrency, CSRF and truthful result mapping.
+
+Integration acceptance launches only an ephemeral loopback Control Center process against temporary Orchestrator, Browser-Wake and route fixtures. It verifies missing/cross-origin rejection, valid confirmed enqueue and replay deduplication without touching the production Browser-Wake database.
+
+Browser acceptance uses mocked temporary action responses and verifies desktop 1440x1100, iPhone 393x852 and 430x932 layouts, preview, cancellation, explicit confirmation, disabled capability, double-click protection and mixed verified/queued/uncertain/blocked/failed-pre-send/skipped outcomes.
+
+No real worker is woken during tests. Production ledgers, routes, services, Home Assistant, devices, networks and secrets remain outside the test write path.
