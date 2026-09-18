@@ -1,8 +1,17 @@
-# Runner Worker Orchestrator
+# LEGACY COPY — DO NOT DEVELOP HERE
+
+> This subtree is retained only for migration traceability and historical comparison.
+> Canonical source of truth: `nicofroeba16-cell/master-orchestration`.
+> Production Browser Wake and Worker Orchestrator have been migrated to the unified `master-orchestration` runtime.
+> Do not implement new orchestration changes in this copy. Removal requires a separate verified cleanup gate.
+
+## Historical documentation
 
 Workstream: **Projekt: Worker Orchestrator → Chat: Runner Worker Orchestrator**
 
-Master source: `nicofroeba16-cell/ha-grok-bridge`, Issue #3.
+Historical coordination source: `nicofroeba16-cell/ha-grok-bridge`, Issue #3.
+
+Current canonical source: `nicofroeba16-cell/master-orchestration`.
 
 ## Purpose
 
