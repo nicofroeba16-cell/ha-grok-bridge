@@ -1,0 +1,111 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "AUTO Control Center",
+        "description": "Configure the local read-only connection.",
+        "data": {
+          "url": "Loopback URL"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Cannot connect",
+      "loopback_required": "A numeric loopback address is required",
+      "source_unhealthy": "The read-only source is not healthy"
+    },
+    "abort": {
+      "already_configured": "Already configured"
+    }
+  },
+  "entity": {
+    "sensor": {
+      "workers_total": {
+        "name": "Workers total"
+      },
+      "workers_running": {
+        "name": "Workers running"
+      },
+      "workers_blocked": {
+        "name": "Workers blocked"
+      },
+      "workers_waiting": {
+        "name": "Workers waiting for user"
+      },
+      "workers_ready_done": {
+        "name": "Workers ready or done"
+      },
+      "wake_uncertain": {
+        "name": "Uncertain wake deliveries"
+      },
+      "activation_unconfirmed": {
+        "name": "Unconfirmed activations"
+      },
+      "activation_confirmed": {
+        "name": "Confirmed activations"
+      },
+      "activation_source": {
+        "name": "Activation source"
+      },
+      "status_resume_workers": {
+        "name": "Resumable workers"
+      },
+      "ci_red": {
+        "name": "CI failures"
+      },
+      "master_progress": {
+        "name": "Master progress"
+      },
+      "registry_drift": {
+        "name": "Registry drift"
+      },
+      "legacy_unrouted": {
+        "name": "Legacy unrouted identities"
+      },
+      "superseded": {
+        "name": "Superseded identities"
+      },
+      "malformed_master_requests": {
+        "name": "Rejected master requests"
+      },
+      "media_jobs_pending": {
+        "name": "Media jobs pending"
+      },
+      "media_jobs_running": {
+        "name": "Media jobs running"
+      },
+      "media_jobs_blocked": {
+        "name": "Media jobs blocked"
+      },
+      "media_jobs_verified": {
+        "name": "Media jobs verified"
+      },
+      "latest_media_archive_age": {
+        "name": "Latest media archive age"
+      },
+      "last_successful_refresh": {
+        "name": "Last successful refresh"
+      },
+      "last_event_age": {
+        "name": "Last event age"
+      }
+    },
+    "binary_sensor": {
+      "source_healthy": {
+        "name": "Source healthy"
+      },
+      "source_stale": {
+        "name": "Source stale"
+      },
+      "wake_path_healthy": {
+        "name": "Wake path healthy"
+      },
+      "master_request_rejection": {
+        "name": "Master request rejection"
+      },
+      "media_archive_schema_ready": {
+        "name": "Media archive schema ready"
+      }
+    }
+  }
+}

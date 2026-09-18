@@ -1,0 +1,111 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "AUTO Control Center",
+        "description": "Lokale Read-only-Verbindung einrichten.",
+        "data": {
+          "url": "Loopback URL"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Verbindung nicht möglich",
+      "loopback_required": "Nur eine numerische Loopback-Adresse ist erlaubt",
+      "source_unhealthy": "Die Read-only-Quelle ist nicht vollständig verfügbar"
+    },
+    "abort": {
+      "already_configured": "Bereits eingerichtet"
+    }
+  },
+  "entity": {
+    "sensor": {
+      "workers_total": {
+        "name": "Worker gesamt"
+      },
+      "workers_running": {
+        "name": "Worker aktiv"
+      },
+      "workers_blocked": {
+        "name": "Worker blockiert"
+      },
+      "workers_waiting": {
+        "name": "Worker warten auf Nutzer"
+      },
+      "workers_ready_done": {
+        "name": "Worker bereit oder erledigt"
+      },
+      "wake_uncertain": {
+        "name": "Unbestätigte Wake-Zustellungen"
+      },
+      "activation_unconfirmed": {
+        "name": "Unbestätigte Aktivierungen"
+      },
+      "activation_confirmed": {
+        "name": "Bestätigte Aktivierungen"
+      },
+      "activation_source": {
+        "name": "Aktivierungsquelle"
+      },
+      "status_resume_workers": {
+        "name": "Fortsetzbare Worker"
+      },
+      "ci_red": {
+        "name": "CI-Fehler"
+      },
+      "master_progress": {
+        "name": "Master-Fortschritt"
+      },
+      "registry_drift": {
+        "name": "Registry-Abweichungen"
+      },
+      "legacy_unrouted": {
+        "name": "Legacy-Identitäten ohne Route"
+      },
+      "superseded": {
+        "name": "Abgelöste Identitäten"
+      },
+      "malformed_master_requests": {
+        "name": "Abgelehnte Master-Anfragen"
+      },
+      "media_jobs_pending": {
+        "name": "Media-Jobs ausstehend"
+      },
+      "media_jobs_running": {
+        "name": "Media-Jobs aktiv"
+      },
+      "media_jobs_blocked": {
+        "name": "Media-Jobs blockiert"
+      },
+      "media_jobs_verified": {
+        "name": "Media-Jobs verifiziert"
+      },
+      "latest_media_archive_age": {
+        "name": "Alter des letzten Media-Archivs"
+      },
+      "last_successful_refresh": {
+        "name": "Letzte erfolgreiche Aktualisierung"
+      },
+      "last_event_age": {
+        "name": "Alter des letzten Events"
+      }
+    },
+    "binary_sensor": {
+      "source_healthy": {
+        "name": "Quelle erreichbar"
+      },
+      "source_stale": {
+        "name": "Quelle veraltet"
+      },
+      "wake_path_healthy": {
+        "name": "Wake-Pfad erreichbar"
+      },
+      "master_request_rejection": {
+        "name": "Master-Anfrage abgelehnt"
+      },
+      "media_archive_schema_ready": {
+        "name": "Media-Archiv-Schema bereit"
+      }
+    }
+  }
+}

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
@@ -74,6 +75,9 @@ def health() -> dict:
         "mode": "read-only",
         "sources": data.source_health(),
         "services": data.service_states(),
+        "wake_path": data.wake_path_health(),
+        "master_request_health": data.master_request_rejections(),
+        "media_archive": data.media_archive_overview(),
     }
 
 
@@ -172,12 +176,45 @@ def wake_all_submit(request: Request, body: WakeAllSubmit) -> JSONResponse:
 @app.get("/api/stream")
 async def stream() -> StreamingResponse:
     async def event_source():
+        last_token = None
+        last_signature = ""
+        last_event_id = ""
+        last_reconcile = 0.0
+        last_heartbeat = 0.0
         while True:
-            payload = data.dashboard()
-            payload["version"] = __version__
-            payload["mode"] = "read-only"
-            yield f"event: dashboard\ndata: {json.dumps(payload, separators=(',', ':'))}\n\n"
-            await asyncio.sleep(3)
+            now = time.monotonic()
+            token = data.source_change_token()
+            should_reconcile = (
+                last_token is None
+                or token != last_token
+                or now - last_reconcile >= 30.0
+            )
+            if should_reconcile:
+                payload = data.dashboard()
+                payload["version"] = __version__
+                payload["mode"] = "read-only"
+                signature = str(payload.get("refresh", {}).get("signature") or "")
+                event_id = str(payload.get("refresh", {}).get("event_id") or signature[:24])
+                if not last_signature or signature != last_signature:
+                    yield (
+                        f"id: {event_id}\n"
+                        "event: dashboard\n"
+                        f"data: {json.dumps(payload, separators=(',', ':'))}\n\n"
+                    )
+                    last_signature = signature
+                    last_event_id = event_id
+                    last_heartbeat = now
+                last_token = token
+                last_reconcile = now
+            if now - last_heartbeat >= 15.0:
+                heartbeat = {
+                    "event_id": last_event_id,
+                    "generated_at": time.time(),
+                    "mode": "read-only",
+                }
+                yield f"event: heartbeat\ndata: {json.dumps(heartbeat, separators=(',', ':'))}\n\n"
+                last_heartbeat = now
+            await asyncio.sleep(0.5)
 
     return StreamingResponse(
         event_source(),

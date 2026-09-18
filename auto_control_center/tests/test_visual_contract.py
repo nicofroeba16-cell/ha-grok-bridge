@@ -101,12 +101,29 @@ class VisualContractTests(unittest.TestCase):
         self.assertIn("wakeSubmitting", self.html)
         self.assertIn("idempotency_key:wakePreview.idempotency_key", self.html)
 
-    def test_wake_all_preserves_v5_layout_and_default_disabled_copy(self):
-        self.assertIn("READ-ONLY DATA v5", self.html)
+    def test_wake_all_preserves_layout_and_default_disabled_copy(self):
+        self.assertIn("READ-ONLY DATA v6", self.html)
         self.assertIn("guarded wake action is disabled by default", self.html)
         self.assertIn("ACC_WAKE_ALL_ENABLED=1", self.html)
         self.assertIn("@media(max-width:650px){.section-actions", self.html)
         self.assertIn(".wake-lists{grid-template-columns:1fr", self.html)
+
+
+    def test_v3_provenance_media_stale_and_accessibility_contract(self):
+        self.assertIn("Aktivierung unbestätigt", self.html)
+        self.assertIn("LEGACY_UNROUTED", self.html)
+        self.assertIn("SUPERSEDED", self.html)
+        self.assertIn("Media archive", self.html)
+        self.assertIn("Schema pending.", self.html)
+        self.assertIn("Malformed MASTER_REQUEST", self.html)
+        self.assertIn("Wake path components", self.html)
+        self.assertIn("staleMs:45000", self.html)
+        self.assertIn("fallbackFastMs:12000", self.html)
+        self.assertIn("fallbackSlowMs:30000", self.html)
+        self.assertIn("reconnectMaxMs:30000", self.html)
+        self.assertIn("addEventListener('heartbeat'", self.html)
+        self.assertIn("@media(prefers-reduced-transparency:reduce)", self.html)
+        self.assertIn("Last known · ", self.html)
 
     def test_no_generic_command_or_direct_chatgpt_automation_exists(self):
         self.assertNotIn("fetch('/api/command", self.html)

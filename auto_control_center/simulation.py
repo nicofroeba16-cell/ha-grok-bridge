@@ -3,8 +3,16 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from .refresh import canonical_event_id, stable_payload_signature
 from .security import sanitize
-from .state import annotate_registry_aliases, evidence_for_worker, resolve_worker, wake_class
+from .state import (
+    annotate_checkpoint_semantics_all,
+    annotate_registry_aliases,
+    apply_activation_provenance,
+    evidence_for_worker,
+    resolve_worker,
+    wake_class,
+)
 
 WORKER_STATES = (
     "RUNNING",
@@ -86,6 +94,7 @@ def _worker(index: int, state: str, *, partial: bool = False, stale: bool = Fals
         "branch": branch,
         "workstream_issue": 100 + index,
         "goal_version": goal_version,
+        "source_comment_id": 5000 + index,
         "state": state,
         "last_head": f"{index:040x}"[-40:],
         "ci_status": ci_status,
@@ -126,14 +135,23 @@ def _empty_payload(*, degraded: bool = False) -> dict[str, Any]:
         "routes": [],
         "services": [],
         "evidence": [],
-        "stats": {
-            "workers": 0,
-            "running": 0,
-            "blocked": 0,
-            "wake_uncertain": 0,
-            "ci_red": 0,
-            "registry_shared_targets": 0,
+        "wake_path": {"healthy": not degraded, "components_expected": 3, "components_active": 0 if degraded else 3, "missing_count": 0, "unhealthy_count": 3 if degraded else 0},
+        "master_request_health": {"total": 1 if degraded else 0, "recent": [], "schema_ready": True},
+        "media_archive": {
+            "schema_ready": True,
+            "summary": {"media_jobs_pending": 0, "media_jobs_running": 0, "media_jobs_blocked": 0, "media_jobs_verified": 0, "latest_media_archive_age": None},
+            "goals": [],
         },
+        "route_drift": {"ledger_unrouted": 0, "route_without_ledger": 0, "legacy_unrouted": 0, "superseded": 0},
+        "stats": {
+            "workers": 0, "running": 0, "blocked": 0, "blocked_stalled": 0,
+            "waiting_for_user": 0, "ready_done": 0, "wake_uncertain": 0,
+            "activation_unconfirmed": 0, "ci_red": 0, "registry_shared_targets": 0,
+            "registry_drift": 0, "malformed_master_requests": 1 if degraded else 0,
+            "media_jobs_pending": 0, "media_jobs_running": 0, "media_jobs_blocked": 0,
+            "media_jobs_verified": 0, "latest_media_archive_age": None,
+        },
+        "refresh": {"signature": "empty", "event_id": "empty", "generated_at": 0.0, "heartbeat_seconds": 15, "reconcile_seconds": 30, "stale_after_seconds": 45},
     }
 
 
@@ -175,8 +193,9 @@ def build_simulation(
     wakes = sanitize(
         [
             {
-                "message_id": f"sim-{i:04d}",
+                "message_id": f"sim:{workers[i % len(workers)]['goal_version']}:{i:04d}",
                 "route_key": workers[i % len(workers)]["worker_key"],
+                "goal_version": workers[i % len(workers)]["goal_version"],
                 "status": WAKE_STATES[i % len(WAKE_STATES)],
                 "attempts": 1 + (i % 3),
                 "last_error": "authorization=Bearer abcdefghijklmnop" if i == 1 else "",
@@ -185,8 +204,26 @@ def build_simulation(
             for i in range(max(0, wake_count))
         ]
     )
+    if len(workers) > 15 and wakes:
+        wakes[0] = {
+            "message_id": f"sim:{workers[15]['goal_version']}:unconfirmed",
+            "route_key": workers[15]["worker_key"],
+            "goal_version": workers[15]["goal_version"],
+            "status": "UNCERTAIN",
+            "attempts": 1,
+            "last_error": "post-send persistence not verified",
+            "updated_at": 2000000000.0,
+            "status_class": "uncertain",
+        }
     for wake in wakes:
         wake["status_class"] = wake_class(wake.get("status"))
+
+    workers = apply_activation_provenance(workers, wakes)
+    route_keys = {
+        row["worker_key"] for row in workers
+        if str(row.get("project") or "") in {"Auto Chat", "Dashboards", "Drucker", "Health", "Mähroboter", "HA Simulation"}
+    }
+    workers = annotate_checkpoint_semantics_all(annotate_registry_aliases(workers, route_keys))
 
     child_target = 36 if worker_count >= 80 else 10
     child_count = min(child_target, len(workers))
@@ -225,8 +262,32 @@ def build_simulation(
         }
         for name in ("worker-orchestrator.service", "browser-wake.service", "browser-wake-chrome.service")
     ]
+    route_rows = [
+        {"worker_key": "__master__", "bound": source_ok, "destination_kind": "url"},
+        *[{"worker_key": key, "bound": source_ok, "destination_kind": "url"} for key in sorted(route_keys)],
+    ]
+    ledger_keys = {row["worker_key"] for row in workers}
+    route_only = len(route_keys - ledger_keys)
+    drift = {
+        "ledger_unrouted": sum(1 for row in workers if not row.get("route_bound")),
+        "route_without_ledger": route_only,
+        "legacy_unrouted": sum(1 for row in workers if row.get("registry_identity_state") == "LEGACY_UNROUTED"),
+        "superseded": sum(1 for row in workers if row.get("registry_identity_state") == "SUPERSEDED"),
+    }
+    media_goals = [
+        {"worker_key": workers[i % len(workers)]["worker_key"], "goal_version": workers[i % len(workers)]["goal_version"], "media_archive_state": state, "expected_count": 4, "uploaded_count": 4 if state in {"VERIFIED", "BLOCKED"} else 2 if state == "RUNNING" else 0, "verified_count": 4 if state == "VERIFIED" else 0, "last_error": "fixture integrity mismatch" if state == "BLOCKED" else "", "evidence_head": f"{900+i:040x}"[-40:], "library_target": f"/Master/Abnahmen/fixture/{state.lower()}"}
+        for i, state in enumerate(("PENDING", "RUNNING", "VERIFIED", "BLOCKED"))
+    ]
+    media = {
+        "schema_ready": True,
+        "summary": {"media_jobs_pending": 1, "media_jobs_running": 1, "media_jobs_blocked": 1, "media_jobs_verified": 1, "latest_media_archive_age": 42},
+        "goals": media_goals,
+    }
     payload = {
         "health": health,
+        "wake_path": {"healthy": source_ok, "components_expected": 3, "components_active": 3 if source_ok else 0, "missing_count": 0, "unhealthy_count": 0 if source_ok else 3},
+        "master_request_health": {"total": 1, "recent": [{"source_comment_id": 4242, "kind": "MASTER_REQUEST", "reason": "invalid WORK_GRAPH_JSON", "created_at": 1789737000.0}], "schema_ready": True},
+        "media_archive": media,
         "master": {
             "request_id": "sim-master",
             "version": "current-view-v5",
@@ -241,27 +302,33 @@ def build_simulation(
         "events": events,
         "wakes": wakes,
         "wake_queues": {"workers": 3 if not degraded else 7, "master": 1},
-        "routes": [
-            {"worker_key": "__master__", "bound": source_ok, "destination_kind": "url"},
-            *[
-                {"worker_key": row["worker_key"], "bound": source_ok, "destination_kind": "url"}
-                for row in workers[: min(12, len(workers))]
-            ],
-        ],
+        "routes": route_rows,
+        "route_drift": drift,
         "services": services,
         "evidence": evidence,
         "stats": {
             "workers": len(workers),
             "running": sum(1 for row in workers if row.get("resolved_state") == "RUNNING"),
-            "blocked": sum(
-                1
-                for row in workers
-                if row.get("resolved_state") in {"BLOCKED", "STALLED", "WAITING_FOR_USER", "ERROR"}
-            ),
+            "blocked": sum(1 for row in workers if row.get("resolved_state") in {"BLOCKED", "STALLED", "WAITING_FOR_USER", "ERROR"}),
+            "blocked_stalled": sum(1 for row in workers if row.get("resolved_state") in {"BLOCKED", "STALLED"}),
+            "waiting_for_user": sum(1 for row in workers if row.get("resolved_state") == "WAITING_FOR_USER"),
+            "ready_done": sum(1 for row in workers if row.get("resolved_state") in {"READY", "DONE"}),
             "wake_uncertain": sum(1 for row in wakes if row.get("status_class") == "uncertain"),
+            "activation_unconfirmed": sum(1 for row in workers if row.get("resolved_state") == "RUNNING" and row.get("activation_confirmed") is False),
             "ci_red": sum(1 for row in evidence if row.get("ci_class") == "red"),
             "registry_shared_targets": len(shared_groups),
+            "registry_drift": sum(drift.values()),
+            "malformed_master_requests": 1,
+            **media["summary"],
         },
+    }
+    payload["refresh"] = {
+        "signature": stable_payload_signature(payload),
+        "event_id": canonical_event_id(payload),
+        "generated_at": 0.0,
+        "heartbeat_seconds": 15,
+        "reconcile_seconds": 30,
+        "stale_after_seconds": 45,
     }
     return sanitize(payload)
 

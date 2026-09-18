@@ -1,0 +1,76 @@
+{
+  "contract": "control-center-ha-integration-final-v3",
+  "source_hashes_unchanged": true,
+  "source_sha256": {
+    "orchestrator_db": "241b2b3f9824e2d0b24c1431642a19f9bc891f43a9523e7a344781525b43614f",
+    "browser_wake_db": "eef4eced99bb61133e82a970a3a28b4ce300ebb184aedaf6ebfd9bc08e6c27cd",
+    "browser_routes": "6890f803dab3c232efbbb09c83dfe1864bdc75b770fac318dd2c397983cf1fc4"
+  },
+  "workers": 20,
+  "routes": 13,
+  "events": 60,
+  "wakes": 92,
+  "stats": {
+    "workers": 20,
+    "running": 0,
+    "blocked": 11,
+    "blocked_stalled": 11,
+    "waiting_for_user": 0,
+    "ready_done": 7,
+    "wake_uncertain": 61,
+    "activation_unconfirmed": 0,
+    "ci_red": 0,
+    "registry_shared_targets": 4,
+    "registry_drift": 18,
+    "malformed_master_requests": 2,
+    "media_jobs_pending": null,
+    "media_jobs_running": null,
+    "media_jobs_blocked": null,
+    "media_jobs_verified": null,
+    "latest_media_archive_age": null
+  },
+  "wake_path": {
+    "healthy": true,
+    "components_expected": 3,
+    "components_active": 3,
+    "missing_count": 0,
+    "unhealthy_count": 0
+  },
+  "master_request_health": {
+    "total": 2,
+    "schema_ready": true,
+    "recent_count": 2
+  },
+  "route_drift": {
+    "ledger_unrouted": 11,
+    "route_without_ledger": 3,
+    "legacy_unrouted": 4,
+    "superseded": 0
+  },
+  "registry_identity_states": {
+    "ACTIVE": 9,
+    "LEGACY_UNROUTED": 4,
+    "UNROUTED": 7
+  },
+  "activation_sources": {
+    "wake_uncertain": 0,
+    "wake_verified": 0,
+    "worker_report": 0
+  },
+  "media_archive_schema_ready": false,
+  "media_summary": {
+    "media_jobs_pending": null,
+    "media_jobs_running": null,
+    "media_jobs_blocked": null,
+    "media_jobs_verified": null,
+    "latest_media_archive_age": null
+  },
+  "redaction_residuals": {
+    "bearer": 0,
+    "github_pat": 0,
+    "url_credentials": 0,
+    "raw_route_url": 0
+  },
+  "route_destinations_exposed": false,
+  "source_paths_exposed": false
+}

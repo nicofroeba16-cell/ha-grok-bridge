@@ -1,0 +1,37 @@
+{
+  "viewports": {
+    "desktop": {
+      "viewport": 1440,
+      "body": 1440,
+      "nav": 1412,
+      "navClient": 1412,
+      "graph": 1376,
+      "sources": 1,
+      "reduced": "smooth"
+    },
+    "iphone": {
+      "viewport": 393,
+      "body": 393,
+      "nav": 375,
+      "navClient": 375,
+      "graph": 590,
+      "sources": 1,
+      "reduced": "auto"
+    }
+  },
+  "interaction": {
+    "desktop_node_preserved": true,
+    "desktop_material_change_ms": 114.5,
+    "desktop_sources_created": 1,
+    "desktop_active_sources": 1,
+    "iphone_node_preserved": true,
+    "iphone_material_change_ms": 106.5,
+    "iphone_sources_created": 1,
+    "iphone_active_sources": 1
+  },
+  "console_errors": [],
+  "page_errors": [],
+  "reduced_motion": {
+    "iphone": true
+  }
+}

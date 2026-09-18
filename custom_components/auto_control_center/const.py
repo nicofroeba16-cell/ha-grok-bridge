@@ -1,0 +1,15 @@
+from __future__ import annotations
+
+DOMAIN = "auto_control_center"
+CONF_URL = "url"
+DEFAULT_URL = "http://127.0.0.1:8877"
+INSTANCE_UID = "auto-control-center-local-v1"
+PLATFORMS = ["sensor", "binary_sensor"]
+
+RECONNECT_MAX_SECONDS = 30.0
+FALLBACK_FAST_SECONDS = 12.0
+FALLBACK_SLOW_SECONDS = 30.0
+FALLBACK_SLOW_AFTER_SECONDS = 120.0
+RECONCILE_SECONDS = 30.0
+STALE_AFTER_SECONDS = 45.0
+STALE_WATCHDOG_SECONDS = 5.0
