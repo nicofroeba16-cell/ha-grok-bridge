@@ -38,6 +38,26 @@ The browser relay never reads ChatGPT responses and never copies ChatGPT output 
     wake. Current-goal identity wins over older terminal predecessors, while a
     terminal state belonging to that same current goal remains protected.
 
+### Pre-send idle and atomic multiline wake contract
+
+The browser sender must not mutate the target composer while that conversation is
+still generating the previous assistant response. Before composer access it
+requires a bounded stable-idle interval with no visible Stop/Stop-generating
+control and no other positive streaming/generating indicator. A busy timeout is
+strictly pre-send: no payload is inserted, no Send is clicked, and the persistent
+queue may safely retry later.
+
+Wake payload insertion is one atomic text operation. The sender never types a
+multiline `MASTER_WAKE` or `WORKER_WAKE` character-by-character. Immediately
+after insertion it reads the composer back and requires exact text equality before
+Send. It also verifies that insertion itself did not create a user turn.
+
+After the single explicit Send click, delivery verification requires exactly one
+new full wake turn and no new first-line-only `MASTER_WAKE`/`WORKER_WAKE` turn.
+The same condition must persist after reload in the exact intended conversation.
+This preserves at-most-once semantics while preventing a wake from interrupting
+or cancelling the task already running in the target chat.
+
 ### Shared Auto policy sync and parse rejection diagnostics
 
 Generated worker wakes carry the shared `auto-chat-status-report-and-resume-v1`

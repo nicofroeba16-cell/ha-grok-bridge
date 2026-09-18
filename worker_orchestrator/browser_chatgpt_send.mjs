@@ -17,16 +17,157 @@ function normalizeText(value) {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function waitForUserTurnIncrease(page, expected, before, timeoutMs = 20000) {
+function canonicalComposerText(value) {
+  return String(value || '').replace(/\r\n?/g, '\n').replace(/\u00a0/g, ' ');
+}
+
+async function readConversationBusyState(page) {
+  return page.evaluate(() => {
+    const visible = (el) => {
+      if (!el) return false;
+      const style = window.getComputedStyle(el);
+      const rect = el.getBoundingClientRect();
+      return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+    };
+    const stopSelectors = [
+      'button[data-testid="stop-button"]',
+      'button[aria-label="Stop generating"]',
+      'button[aria-label="Generierung stoppen"]',
+      'button[aria-label="Antwortgenerierung beenden"]',
+    ];
+    const stopControl = document.querySelector(stopSelectors.join(','));
+    if (visible(stopControl)) {
+      return { busy: true, reason: 'stop_control_visible' };
+    }
+
+    const busyCandidates = [...document.querySelectorAll(
+      '[aria-busy="true"], [data-state="streaming"], [data-is-streaming="true"], button, [role="button"]'
+    )].filter(visible);
+    for (const element of busyCandidates) {
+      const metadata = [
+        element.getAttribute('aria-label'),
+        element.getAttribute('title'),
+        element.getAttribute('data-testid'),
+        element.getAttribute('data-state'),
+        element.textContent,
+      ].filter(Boolean).join(' ').toLowerCase();
+      if (
+        metadata.includes('stop generating') ||
+        metadata.includes('generierung stoppen') ||
+        metadata.includes('antwortgenerierung beenden') ||
+        metadata.includes('streaming') ||
+        metadata.includes('generating')
+      ) {
+        return { busy: true, reason: 'positive_generation_indicator' };
+      }
+    }
+    return { busy: false, reason: 'idle' };
+  });
+}
+
+async function waitForStableConversationIdle(
+  page,
+  timeoutMs = Number(process.env.CHATGPT_IDLE_TIMEOUT_MS || 120000),
+  stableMs = Number(process.env.CHATGPT_IDLE_STABLE_MS || 1500),
+) {
+  const deadline = Date.now() + Math.max(1000, timeoutMs);
+  let idleSince = 0;
+  while (Date.now() < deadline) {
+    let state = { busy: true, reason: 'probe_failed' };
+    try {
+      state = await readConversationBusyState(page);
+    } catch (_) {
+      state = { busy: true, reason: 'probe_failed' };
+    }
+    if (!state.busy) {
+      if (!idleSince) idleSince = Date.now();
+      if (Date.now() - idleSince >= Math.max(250, stableMs)) {
+        return { idle: true, stable_for_ms: Date.now() - idleSince };
+      }
+    } else {
+      idleSince = 0;
+    }
+    await sleep(250);
+  }
+  return { idle: false, stable_for_ms: 0 };
+}
+
+async function composerText(page, composer) {
+  return page.evaluate((el) => {
+    if (!el) return '';
+    if ('value' in el && typeof el.value === 'string') return el.value;
+    return el.innerText ?? el.textContent ?? '';
+  }, composer);
+}
+
+async function setComposerTextAtomically(page, composer, payload) {
+  await page.evaluate((el, text) => {
+    if (!el) throw new Error('composer missing during atomic insertion');
+    const tag = (el.tagName || '').toLowerCase();
+    if (tag === 'textarea' || tag === 'input') {
+      const proto = tag === 'textarea' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+      if (!setter) throw new Error('native composer value setter unavailable');
+      setter.call(el, text);
+      el.dispatchEvent(new InputEvent('input', {
+        bubbles: true,
+        inputType: 'insertText',
+        data: text,
+      }));
+      return;
+    }
+
+    if (!el.isContentEditable) throw new Error('unsupported ChatGPT composer element');
+    el.focus();
+    const selection = window.getSelection();
+    if (!selection) throw new Error('composer selection unavailable');
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    selection.removeAllRanges();
+    selection.addRange(range);
+
+    // One insertText operation is deliberately used for the complete payload.
+    // Embedded newlines are data, not KeyboardEvent Enter presses.
+    const inserted = document.execCommand('insertText', false, text);
+    if (!inserted) {
+      el.replaceChildren(document.createTextNode(text));
+      el.dispatchEvent(new InputEvent('input', {
+        bubbles: true,
+        inputType: 'insertText',
+        data: text,
+      }));
+    }
+  }, composer, payload);
+}
+
+async function countWakeTurns(page, fullPayload, firstLine) {
+  return page.evaluate(({ fullPayload, firstLine }) => {
+    const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+    const full = normalize(fullPayload);
+    const prefix = normalize(firstLine);
+    let exactFull = 0;
+    let exactPrefixOnly = 0;
+    for (const turn of document.querySelectorAll('[data-message-author-role="user"]')) {
+      const text = normalize(turn.innerText || turn.textContent || '');
+      if (text === full) exactFull += 1;
+      if (text === prefix && text !== full) exactPrefixOnly += 1;
+    }
+    return { exactFull, exactPrefixOnly };
+  }, { fullPayload, firstLine });
+}
+
+async function waitForExactlyOneWakeTurn(page, fullPayload, firstLine, before, timeoutMs = 60000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
-      const matches = await page.evaluate((expected) => {
-        const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
-        return [...document.querySelectorAll('[data-message-author-role="user"]')]
-          .filter((turn) => normalize(turn.innerText || turn.textContent || '').includes(expected)).length;
-      }, expected);
-      if (matches > before) return true;
+      const counts = await countWakeTurns(page, fullPayload, firstLine);
+      if (
+        counts.exactFull === before.exactFull + 1 &&
+        counts.exactPrefixOnly === before.exactPrefixOnly
+      ) return true;
+      if (counts.exactFull > before.exactFull + 1 || counts.exactPrefixOnly > before.exactPrefixOnly) {
+        return false;
+      }
     } catch (_) {}
     await sleep(250);
   }
@@ -75,20 +216,41 @@ async function waitForAssistantCompletion(page, before, timeoutMs = 120000) {
   return false;
 }
 
-async function waitForPersistedUserTurn(page, expected, expectedPath, timeoutMs = 60000) {
+async function waitForPersistedUserTurn(
+  page,
+  fullPayload,
+  firstLine,
+  expectedPath,
+  before,
+  timeoutMs = 60000,
+) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
-      const state = await page.evaluate(({ expected, expectedPath }) => {
+      const state = await page.evaluate(({ fullPayload, firstLine, expectedPath, before }) => {
         const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
         const currentPath = location.pathname.replace(/\/$/, '');
         const inConversation = location.hostname === 'chatgpt.com' && currentPath.includes('/c/');
         const sameConversation = currentPath === expectedPath;
-        const persisted = [...document.querySelectorAll('[data-message-author-role="user"]')]
-          .some((turn) => normalize(turn.innerText || turn.textContent || '').includes(expected));
-        return { inConversation, sameConversation, persisted };
-      }, { expected, expectedPath });
-      if (state.inConversation && state.sameConversation && state.persisted) return true;
+        const full = normalize(fullPayload);
+        const prefix = normalize(firstLine);
+        let exactFull = 0;
+        let exactPrefixOnly = 0;
+        for (const turn of document.querySelectorAll('[data-message-author-role="user"]')) {
+          const text = normalize(turn.innerText || turn.textContent || '');
+          if (text === full) exactFull += 1;
+          if (text === prefix && text !== full) exactPrefixOnly += 1;
+        }
+        const persistedExactlyOnce = exactFull === before.exactFull + 1;
+        const noPrefixRegression = exactPrefixOnly === before.exactPrefixOnly;
+        return { inConversation, sameConversation, persistedExactlyOnce, noPrefixRegression };
+      }, { fullPayload, firstLine, expectedPath, before });
+      if (
+        state.inConversation &&
+        state.sameConversation &&
+        state.persistedExactlyOnce &&
+        state.noPrefixRegression
+      ) return true;
     } catch (_) {}
     await sleep(500);
   }
@@ -343,6 +505,13 @@ async function main() {
     if (!loaded.pathname.includes('/c/')) throw new Error('ChatGPT conversation did not load; login may be required');
     if (loadedPath !== expectedPath) throw new Error('ChatGPT conversation route verification failed before send');
 
+    // Never mutate the composer while the previous assistant task is active.
+    // A busy timeout is pre-send and therefore safe for the persistent queue to retry.
+    const idle = await waitForStableConversationIdle(page);
+    if (!idle.idle) {
+      throw new Error('target conversation remained busy before wake insertion');
+    }
+
     const composerSelector = [
       '[data-testid="prompt-textarea"]',
       '#prompt-textarea',
@@ -351,8 +520,30 @@ async function main() {
     await page.waitForSelector(composerSelector, { visible: true, timeout: 20000 });
     const composer = await page.$(composerSelector);
     if (!composer) throw new Error('ChatGPT composer not found');
-    await composer.focus();
-    await page.keyboard.type(request.payload);
+
+    const composerBefore = canonicalComposerText(await composerText(page, composer));
+    if (composerBefore.trim()) {
+      throw new Error('ChatGPT composer contains an existing draft; refusing to overwrite');
+    }
+
+    const wakeFirstLine = String(request.payload).split(/\r?\n/, 1)[0];
+    const wakeTurnsBefore = await countWakeTurns(page, request.payload, wakeFirstLine);
+
+    // Insert the entire payload through one DOM text operation. No per-character
+    // KeyboardEvent path is allowed because embedded newlines must never submit.
+    await setComposerTextAtomically(page, composer, request.payload);
+    const insertedPayload = canonicalComposerText(await composerText(page, composer));
+    if (insertedPayload !== canonicalComposerText(request.payload)) {
+      throw new Error('atomic composer payload readback mismatch before send');
+    }
+
+    const wakeTurnsAfterInsertion = await countWakeTurns(page, request.payload, wakeFirstLine);
+    if (
+      wakeTurnsAfterInsertion.exactFull !== wakeTurnsBefore.exactFull ||
+      wakeTurnsAfterInsertion.exactPrefixOnly !== wakeTurnsBefore.exactPrefixOnly
+    ) {
+      throw new Error('wake user turn appeared before explicit Send');
+    }
 
     const sendSelector = [
       'button[data-testid="send-button"]',
@@ -365,12 +556,6 @@ async function main() {
     const disabled = await send.evaluate((el) => el.disabled || el.getAttribute('aria-disabled') === 'true');
     if (disabled) throw new Error('ChatGPT send button is disabled');
 
-    const expectedPayload = normalizeText(request.payload);
-    const matchingUserTurnsBefore = await page.evaluate((expected) => {
-      const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
-      return [...document.querySelectorAll('[data-message-author-role="user"]')]
-        .filter((turn) => normalize(turn.innerText || turn.textContent || '').includes(expected)).length;
-    }, expectedPayload);
     const assistantTurnsBefore = await page.evaluate(() => {
       const turns = [...document.querySelectorAll('[data-message-author-role="assistant"]')];
       return {
@@ -384,8 +569,13 @@ async function main() {
     sendCommitted = true;
     await send.click();
 
-    if (!await waitForUserTurnIncrease(page, expectedPayload, matchingUserTurnsBefore)) {
-      throw new Error('post-send delivery could not be verified in ChatGPT conversation');
+    if (!await waitForExactlyOneWakeTurn(
+      page,
+      request.payload,
+      wakeFirstLine,
+      wakeTurnsBefore,
+    )) {
+      throw new Error('post-send wake turn verification failed or prefix-only regression detected');
     }
 
     // Do not reload while ChatGPT is still producing the response. These pollers
@@ -403,8 +593,14 @@ async function main() {
     } catch (_) {
       // A navigation timeout after Send is uncertain; continue read-only polling.
     }
-    if (!await waitForPersistedUserTurn(page, expectedPayload, expectedPath)) {
-      throw new Error('post-send delivery was not persisted in the intended ChatGPT conversation after reload');
+    if (!await waitForPersistedUserTurn(
+      page,
+      request.payload,
+      wakeFirstLine,
+      expectedPath,
+      wakeTurnsBefore,
+    )) {
+      throw new Error('post-send delivery was not persisted exactly once without a prefix-only wake turn');
     }
 
     process.stdout.write(JSON.stringify({
@@ -414,6 +610,9 @@ async function main() {
       destination_verified: true,
       persisted_after_reload: true,
       response_completed_before_reload: true,
+      target_idle_verified_before_composer_mutation: true,
+      atomic_payload_readback_verified: true,
+      exactly_one_full_wake_turn_verified: true,
       verification_source: 'persisted_user_turn_after_reload_same_conversation',
       output_scraped: false,
     }) + '\n');
