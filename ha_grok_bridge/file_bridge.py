@@ -67,7 +67,7 @@ def save(path, value):
 def cfg():
     defaults = {
         "poll_interval": 60,
-        "config_repo": "git@github.com:nicofroeba16-cell/ha-grok-bridge-live.git",
+        "config_repo": "",
         "branch": "main",
         "sync_mode": "bidirectional",
         "initial_sync": "ha_to_git",
@@ -459,8 +459,11 @@ def sync(c, forced=None):
         branch = str(c.get("branch", "main"))
         mode = forced or str(c.get("sync_mode", "bidirectional"))
         dry = bool(c.get("dry_run", False))
+        config_repo = str(c.get("config_repo", "")).strip()
+        if not config_repo:
+            raise RuntimeError("config_repo must be explicitly configured")
         log("sync start")
-        repo(str(c["config_repo"]), branch)
+        repo(config_repo, branch)
         if git(["fsck", "--no-progress"], check=False).returncode:
             raise RuntimeError("repository invalid")
         log("repo: OK")

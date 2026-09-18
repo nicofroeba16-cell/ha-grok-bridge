@@ -20,7 +20,7 @@ map:
     path: /config
 options:
   poll_interval: 60
-  config_repo: git@github.com:nicofroeba16-cell/ha-grok-bridge-live.git
+  config_repo: ""
   branch: main
   sync_mode: bidirectional
   initial_sync: ha_to_git
