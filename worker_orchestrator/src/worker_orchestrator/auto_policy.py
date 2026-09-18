@@ -163,4 +163,3 @@ def resolve_status_checkpoint(
         True, False, "", False, source_comment_id,
         "newest canonical goal is resumable and not terminal",
     )
-
