@@ -105,4 +105,3 @@ process.stdout.write(JSON.stringify({
   ok: true,
   cases: ['master-atomic', 'worker-atomic', 'busy-zero-mutation', 'stable-idle-delivery'],
 }) + '\n');
-
