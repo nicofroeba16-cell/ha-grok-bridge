@@ -2,30 +2,31 @@
 
 ## Purpose
 
-This repository contains **HA File Sync Bridge**, a Home Assistant add-on that synchronizes the permitted Home Assistant `/config` tree with a GitHub repository and automatically deploys permitted remote changes back to `/config`.
+This repository contains **HA File Sync Bridge**, a Home Assistant add-on that can synchronize a permitted Home Assistant `/config` tree with an explicitly configured GitHub repository and can deploy permitted remote changes back to `/config`.
 
-The current bridge version is **1.10**.
+The current bridge version is **1.13**.
 
 ## Repositories
 
 - Add-on source: `nicofroeba16-cell/ha-grok-bridge`
-- Home Assistant live configuration repository: `nicofroeba16-cell/ha-grok-bridge-live`
+- Canonical Home Assistant configuration source: `nicofroeba16-cell/HA-CONFIG`
+- Canonical orchestration source: `nicofroeba16-cell/master-orchestration`
 - Deployment branch: `main`
 
 ## AI operating model
 
-For Home Assistant project changes, an AI agent should work through GitHub rather than requiring manual shell commands on the HA host:
+For Home Assistant project changes, an AI agent should use the canonical source repository and the controlled deployment workflow rather than treating a runtime mirror as source of truth:
 
 1. Inspect the current repository state.
-2. Change the required file in `ha-grok-bridge-live`.
-3. Commit the change to the intended branch.
-4. Use a repository-relative path; that path maps to the same relative path below `/config`.
-5. The installed Bridge 1.10 polls GitHub automatically and detects a new remote commit.
-6. The bridge security-scans, snapshots, deploys, verifies hashes, and rolls back on failure when enabled.
+2. Change the required file in `HA-CONFIG` on the intended branch.
+3. Commit and verify the change.
+4. Use the controlled deployment path for applying approved changes to `/config`.
+5. Do not assume the bridge is enabled or configured; its `config_repo` must be set explicitly before synchronization can occur.
+6. Verify live state separately from source state.
 
 ## Path-preserving deployment
 
-A GitHub path is the deployment path. Examples:
+A repository-relative path maps to the same relative path below `/config` when a deployment path is explicitly used. Examples:
 
 - `configuration.yaml` -> `/config/configuration.yaml`
 - `automations/test.yaml` -> `/config/automations/test.yaml`
@@ -33,17 +34,17 @@ A GitHub path is the deployment path. Examples:
 - `www/app/index.html` -> `/config/www/app/index.html`
 - `packages/example.yaml` -> `/config/packages/example.yaml`
 
-Nested directories are created automatically. Permitted arbitrary file types are supported; deployment is not limited to YAML.
+Nested directories can be created automatically. Permitted arbitrary file types are supported; deployment is not limited to YAML.
 
-## Bidirectional behavior
+## Bridge behavior
 
-With `sync_mode: bidirectional`:
+If the bridge is explicitly configured and running with `sync_mode: bidirectional`:
 
-- GitHub commit -> automatic GitHub -> `/config` deployment.
-- `/config` change -> automatic `/config` -> GitHub commit/push.
+- GitHub commit -> permitted GitHub -> `/config` deployment.
+- `/config` change -> permitted `/config` -> GitHub commit/push.
 - If both sides changed since the last known synchronized commit, the bridge reports a conflict instead of silently overwriting either side.
 
-Remote deployment is enabled by default with `deploy_on_remote_change: true`.
+The current repository default for `config_repo` is empty. This is intentional and fail-closed: no synchronization repository should be assumed implicitly.
 
 ## Security and exclusions
 
@@ -83,9 +84,9 @@ or:
 
 Binary data can be supplied as base64. `/files` and `/browse` expose permitted directory contents.
 
-## Autonomous deployment guarantees
+## Safety guarantees
 
-Bridge 1.10 is designed as an autonomous GitHub-driven deployment bridge with:
+When explicitly configured and enabled, Bridge 1.13 provides:
 
 - GitHub remote-change detection
 - path-preserving GitHub -> `/config` deployment
@@ -101,7 +102,7 @@ Bridge 1.10 is designed as an autonomous GitHub-driven deployment bridge with:
 - conflict detection
 - protection against excluded/runtime content being synchronized
 
-Default safety settings:
+Default safety settings include:
 
 ```yaml
 deploy_on_remote_change: true
@@ -113,17 +114,13 @@ auto_reload: false
 
 ## Important distinction
 
-An AI does not receive direct shell access to Home Assistant merely because this repository exists. Autonomous live deployment requires:
+An AI does not receive direct shell access to Home Assistant merely because this repository exists. Live deployment requires explicit authorization, a configured deployment path, and separate verification of runtime state.
 
-- AI permission to modify the configured GitHub repository,
-- Bridge 1.10 (or newer) running on the Home Assistant instance, and
-- the bridge being able to reach and pull the configured GitHub repository.
-
-When those conditions hold, a normal AI workflow is simply: **change/commit the desired GitHub path and let the bridge deploy it automatically**.
+The bridge must not be treated as the canonical source repository. `HA-CONFIG` remains the canonical Home Assistant configuration source.
 
 ## Verification
 
-A GitHub commit alone is not proof of live deployment. When runtime status is available, verify that the bridge detected the commit, security scanning passed, deployment completed, integrity verification passed, no rollback occurred, and the expected `/config/...` path exists.
+A GitHub commit alone is not proof of live deployment. When runtime status is available, verify the actual `/config` state, relevant hashes, deployment result, and rollback/error state.
 
 Never claim live HA deployment was verified when runtime access was not available.
 
