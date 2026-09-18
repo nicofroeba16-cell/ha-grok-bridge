@@ -21,6 +21,9 @@ class BrowserSenderCompletionContractTests(unittest.TestCase):
         self.assertIn("data-message-id", source)
         self.assertIn("hasNewIdentity", source)
         self.assertIn("identityAvailable ? hasNewIdentity : assistantTurns.length > before.count", source)
+        self.assertIn("sameConversation", source)
+        self.assertIn("destination_verified: true", source)
+        self.assertIn("persisted_user_turn_after_reload_same_conversation", source)
 
 
 if __name__ == "__main__":

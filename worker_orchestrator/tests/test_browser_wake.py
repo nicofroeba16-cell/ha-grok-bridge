@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 import subprocess
 import unittest
@@ -12,6 +13,7 @@ from worker_orchestrator.browser_wake import (
     BrowserWakePreSendError,
     BrowserWakeUncertainError,
     CommandBrowserSender,
+    DeliveryReceipt,
     WakeCoordinator,
 )
 
@@ -73,7 +75,7 @@ class BrowserWakeTests(unittest.TestCase):
     def tearDown(self):
         self.conn.close()
 
-    def coordinator(self, sender=None, debounce=0):
+    def coordinator(self, sender=None, debounce=0, verified_reporter=None):
         return WakeCoordinator(
             self.conn,
             routes(),
@@ -82,6 +84,7 @@ class BrowserWakeTests(unittest.TestCase):
             master_issue=3,
             debounce_seconds=debounce,
             now=lambda: 1000.0,
+            verified_delivery_reporter=verified_reporter,
         )
 
     def test_route_validation_is_exact_chatgpt_conversation_only(self):
@@ -189,6 +192,122 @@ class BrowserWakeTests(unittest.TestCase):
         result = coord.reconcile(items, replay_existing=True)
         self.assertEqual(result["uncertain_deliveries"], 1)
         self.assertEqual(len(coord.ledger.uncertain_deliveries()), 1)
+
+    def test_verified_delivery_publishes_once_and_survives_duplicate_reconcile(self):
+        reports = []
+
+        def sender(message_id, destination, payload):
+            return DeliveryReceipt(
+                message_id=message_id,
+                verified=True,
+                verification_source="persisted_user_turn_after_reload_same_conversation",
+                persisted_after_reload=True,
+                destination_verified=True,
+                transport="test-browser",
+            )
+
+        coord = self.coordinator(sender, verified_reporter=reports.append)
+        items = [{"id": 1, "body": request_body()}]
+        result = coord.reconcile(items, replay_existing=True)
+        self.assertEqual(result["worker_wakes"], 1)
+        self.assertEqual(result["verified_delivery_events"], 1)
+        self.assertEqual(len(reports), 1)
+        self.assertEqual(reports[0]["goal_version"], "v1-child")
+        self.assertEqual(reports[0]["route_key"], WORKER_KEY)
+        self.assertEqual(coord.ledger.pending_verified_deliveries(), [])
+
+        result = coord.reconcile(items, replay_existing=True)
+        self.assertEqual(result["verified_delivery_events"], 0)
+        self.assertEqual(len(reports), 1)
+
+    def test_verified_delivery_report_retries_without_resending_worker(self):
+        sends = []
+        reports = []
+
+        def sender(message_id, destination, payload):
+            sends.append(message_id)
+            return DeliveryReceipt(
+                message_id=message_id,
+                verified=True,
+                verification_source="persisted_user_turn_after_reload_same_conversation",
+                persisted_after_reload=True,
+                destination_verified=True,
+            )
+
+        def reporter(record):
+            reports.append(record)
+            if len(reports) == 1:
+                raise OSError("github unavailable")
+
+        coord = self.coordinator(sender, verified_reporter=reporter)
+        items = [{"id": 1, "body": request_body()}]
+        first = coord.reconcile(items, replay_existing=True)
+        self.assertEqual(first["verified_delivery_events"], 0)
+        self.assertEqual(len(sends), 1)
+        self.assertEqual(len(coord.ledger.pending_verified_deliveries()), 1)
+
+        second = coord.reconcile(items, replay_existing=True)
+        self.assertEqual(second["verified_delivery_events"], 1)
+        self.assertEqual(len(sends), 1)
+        self.assertEqual(len(reports), 2)
+        self.assertEqual(coord.ledger.pending_verified_deliveries(), [])
+
+    def test_verified_receipt_with_wrong_route_identity_fails_closed(self):
+        reports = []
+
+        def sender(message_id, destination, payload):
+            return DeliveryReceipt(
+                message_id=message_id,
+                verified=True,
+                verification_source="persisted_user_turn_after_reload_same_conversation",
+                persisted_after_reload=True,
+                destination_verified=True,
+            )
+
+        coord = self.coordinator(sender, verified_reporter=reports.append)
+        payload = "\n".join([
+            "WORKER_WAKE",
+            "PROJECT: Wrong",
+            "CHAT: Route",
+            "GOAL_VERSION: v1-child",
+        ])
+        self.assertTrue(coord._send_once("m-wrong-route", WORKER_KEY, WORKER_URL, payload))
+        self.assertEqual(coord.ledger.pending_verified_deliveries(), [])
+        self.assertEqual(coord._flush_verified_delivery_events(), 0)
+        self.assertEqual(reports, [])
+
+    def test_command_sender_requires_positive_persisted_destination_verification(self):
+        sender = CommandBrowserSender("echo ok")
+        verified = {
+            "status": "sent",
+            "message_id": "m1",
+            "delivery_verified": True,
+            "destination_verified": True,
+            "persisted_after_reload": True,
+            "verification_source": "persisted_user_turn_after_reload_same_conversation",
+        }
+        with patch(
+            "worker_orchestrator.browser_wake.subprocess.run",
+            return_value=subprocess.CompletedProcess(["echo"], 0, stdout=json.dumps(verified), stderr=""),
+        ):
+            receipt = sender("m1", WORKER_URL, "wake")
+        self.assertTrue(receipt.verified)
+
+        unverified = {"status": "sent", "message_id": "m2", "transport": "desktop"}
+        with patch(
+            "worker_orchestrator.browser_wake.subprocess.run",
+            return_value=subprocess.CompletedProcess(["echo"], 0, stdout=json.dumps(unverified), stderr=""),
+        ):
+            receipt = sender("m2", WORKER_URL, "wake")
+        self.assertFalse(receipt.verified)
+
+        mismatch = {**verified, "message_id": "other"}
+        with patch(
+            "worker_orchestrator.browser_wake.subprocess.run",
+            return_value=subprocess.CompletedProcess(["echo"], 0, stdout=json.dumps(mismatch), stderr=""),
+        ):
+            with self.assertRaises(BrowserWakeUncertainError):
+                sender("m3", WORKER_URL, "wake")
 
     def test_two_worker_statuses_batch_into_exactly_one_master_wake(self):
         sender = RecordingSender()

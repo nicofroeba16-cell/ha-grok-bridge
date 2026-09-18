@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from hashlib import sha256
-from typing import Callable
+from typing import Callable, Mapping
 
 from .goals import parse_goals
 from .models import DEFAULT_ALLOWED_REPOSITORIES, GATED_ACTIONS, Goal, LifecycleState, WorkerResult
@@ -18,6 +18,58 @@ class ReportFormatError(Exception):
 
 class DocumentationDriftError(RuntimeError):
     """Raised when a canonical status destination cannot be written."""
+
+
+def parse_verified_delivery_events(items: list[dict]) -> list[dict[str, object]]:
+    events: list[dict[str, object]] = []
+    for item in items:
+        body = str(item.get("body", ""))
+        if not body.lstrip().startswith("BROWSER_WAKE_DELIVERY"):
+            continue
+        fields: dict[str, str] = {}
+        for line in body.splitlines():
+            if ":" in line:
+                key, value = line.split(":", 1)
+                fields[key.strip().upper()] = value.strip()
+        if fields.get("DELIVERY_STATUS", "").upper() != "VERIFIED":
+            continue
+        if fields.get("DELIVERY_VERIFIED", "").lower() != "true":
+            continue
+        if fields.get("SOURCE") != "browser_wake_verified_delivery_v1":
+            continue
+        project = fields.get("PROJECT", "")
+        chat = fields.get("CHAT", "")
+        goal_version = fields.get("GOAL_VERSION", "")
+        wake_id = fields.get("WAKE_ID", "")
+        if not all((project, chat, goal_version, wake_id)):
+            continue
+        evidence: Mapping[str, object] = {}
+        raw_evidence = fields.get("EVIDENCE", "")
+        if raw_evidence:
+            try:
+                parsed = json.loads(raw_evidence)
+                if isinstance(parsed, Mapping):
+                    evidence = parsed
+            except json.JSONDecodeError:
+                evidence = {}
+        if evidence.get("reason") != "VERIFIED_BROWSER_WAKE_DELIVERY":
+            continue
+        if evidence.get("destination_verified") is not True:
+            continue
+        if evidence.get("persisted_after_reload") is not True:
+            continue
+        if evidence.get("verification_source") != "persisted_user_turn_after_reload_same_conversation":
+            continue
+        events.append({
+            "worker_key": f"Projekt: {project} → Chat: {chat}",
+            "project": project,
+            "chat": chat,
+            "goal_version": goal_version,
+            "wake_id": wake_id,
+            "evidence": sanitize(dict(evidence)),
+            "source_comment_id": item.get("id"),
+        })
+    return events
 
 
 class Orchestrator:
@@ -74,7 +126,73 @@ class Orchestrator:
                     goal,
                     {"state": LifecycleState.ASSIGNED, "next": "dispatch"},
                 )
+        self._ingest_verified_deliveries(items)
         return accepted
+
+    def _ingest_verified_deliveries(self, items: list[dict]) -> None:
+        eligible = {LifecycleState.ASSIGNED, LifecycleState.IDLE}
+        for event in parse_verified_delivery_events(items):
+            worker_key = str(event["worker_key"])
+            row = self.registry.get(worker_key)
+            if row is None:
+                continue
+            if str(row["goal_version"]) != str(event["goal_version"]):
+                continue
+            state = LifecycleState(row["state"])
+            if state not in eligible:
+                continue
+            delivery_evidence = {
+                "reason": "VERIFIED_BROWSER_WAKE_DELIVERY",
+                "wake_id": str(event["wake_id"]),
+                "source_comment_id": event.get("source_comment_id"),
+                **dict(event.get("evidence") or {}),
+            }
+            session_state = json.loads(row["session_state"] or "{}")
+            session_state["verified_wake_delivery"] = delivery_evidence
+            self.registry.set_state(
+                worker_key,
+                LifecycleState.RUNNING,
+                last_progress="RUNNING entered after verified browser wake delivery.",
+                completion_evidence=delivery_evidence,
+                session_state=session_state,
+            )
+            self.registry.record_event(
+                worker_key,
+                str(event["goal_version"]),
+                "VERIFIED_WAKE_DELIVERY",
+                delivery_evidence,
+            )
+            goal = Goal(
+                project=row["project"],
+                chat=row["chat"],
+                repository=row["repository"],
+                branch=row["branch"],
+                prompt=row["prompt"],
+                done_criteria=tuple(json.loads(row["done_criteria"])),
+                workstream_issue=row["workstream_issue"],
+                explicit_version=row["goal_version"],
+                files=tuple(json.loads(row["files"])),
+                scope=row["scope"],
+                approved_actions=tuple(json.loads(row["approved_actions"])),
+                source_comment_id=row["source_comment_id"],
+            )
+            self._report(
+                "WORKER_STATUS",
+                goal,
+                {
+                    "state": LifecycleState.RUNNING,
+                    "head": row["last_head"],
+                    "ci": row["ci_status"],
+                    "done": f"0/{len(goal.done_criteria)}",
+                    "blockers": [],
+                    "user_action_required": [],
+                    "last_progress": "RUNNING entered after verified browser wake delivery.",
+                    "next": "worker execution in canonical ChatGPT conversation",
+                    "evidence": delivery_evidence,
+                    "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                    "supersedes": row["last_report_fingerprint"],
+                },
+            )
 
     def dispatch_goal(self, goal: Goal) -> LifecycleState:
         row = self.registry.get(goal.key)

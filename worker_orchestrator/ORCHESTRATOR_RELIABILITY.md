@@ -42,6 +42,26 @@ read-only enumeration for recovery tooling.
 Only `FAILED_PRE_SEND` is marked retryable by the ledger. This preserves
 at-most-once safety when a send may already have occurred.
 
+## Confirmed wake -> RUNNING
+
+Goal `orchestrator-confirmed-wake-running-v1` adds a separate positive-delivery
+contract. A browser helper may claim verified delivery only after all of these are
+true: the exact intended conversation path loaded, the user wake turn appeared,
+the assistant turn completed without scraping its content, a reload completed,
+and the same wake turn persisted in that same conversation.
+
+The Browser-Wake ledger persists this verified receipt before publishing a
+`BROWSER_WAKE_DELIVERY` source event to Master Issue #3. Publication failure is
+retryable from the ledger without re-sending the wake. The Orchestrator accepts
+only current-goal events with the full persisted/destination verification evidence
+and promotes only `ASSIGNED`/eligible idle state to `RUNNING`.
+
+`FAILED_PRE_SEND`, `IN_FLIGHT`, `UNCERTAIN`, unverified `DELIVERED`, stale
+goal versions, ambiguous/wrong routes, and terminal states never promote
+`RUNNING`. Duplicate verified evidence is idempotent. Browser-verified external
+`RUNNING` workers are also preserved across an Orchestrator daemon restart
+instead of being incorrectly requeued as local interrupted execution.
+
 ## Verification contract
 
 The reliability tests cover:
@@ -49,7 +69,10 @@ The reliability tests cover:
 - partial child/Master write recovery without false completion;
 - legacy and equivalent/conflicting duplicate row classification;
 - missing, duplicate-key, and ambiguous-destination route failures;
-- persistent `UNCERTAIN` evidence with no automatic retry.
+- persistent `UNCERTAIN` evidence with no automatic retry;
+- positive verified wake promotion, negative delivery states, wrong-route rejection,
+  changed-goal protection, duplicate idempotency, publication retry, and restart
+  preservation of externally running workers.
 
 Verification must be run from the exact candidate HEAD with:
 `PYTHONPATH=worker_orchestrator/src python3 -m unittest discover -s worker_orchestrator/tests -v`

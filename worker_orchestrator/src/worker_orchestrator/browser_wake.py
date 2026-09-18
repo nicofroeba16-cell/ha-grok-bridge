@@ -39,6 +39,16 @@ class BrowserWakeUncertainError(BrowserWakeError):
 
 
 @dataclass(frozen=True, slots=True)
+class DeliveryReceipt:
+    message_id: str
+    verified: bool = False
+    verification_source: str = ""
+    persisted_after_reload: bool = False
+    destination_verified: bool = False
+    transport: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class BrowserRoute:
     key: str
     url: str
@@ -184,6 +194,16 @@ class WakeLedger:
                     id INTEGER PRIMARY KEY CHECK(id=1), event_ids TEXT NOT NULL,
                     first_seen REAL NOT NULL, max_event_id INTEGER NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS browser_wake_verified_delivery (
+                    message_id TEXT PRIMARY KEY,
+                    route_key TEXT NOT NULL,
+                    project TEXT NOT NULL,
+                    chat TEXT NOT NULL,
+                    goal_version TEXT NOT NULL,
+                    evidence TEXT NOT NULL,
+                    published INTEGER NOT NULL DEFAULT 0,
+                    updated_at REAL NOT NULL
+                );
             """)
 
     def get_int(self, key: str, default: int = 0) -> int:
@@ -252,6 +272,64 @@ class WakeLedger:
             )
         ]
         return [self.evaluate_delivery(message_id) for message_id in ids]
+
+    def record_verified_delivery(
+        self,
+        message_id: str,
+        route_key: str,
+        project: str,
+        chat: str,
+        goal_version: str,
+        evidence: Mapping[str, object],
+    ) -> None:
+        safe_evidence = sanitize(dict(evidence))
+        with self.connection:
+            self.connection.execute(
+                """INSERT INTO browser_wake_verified_delivery(
+                       message_id,route_key,project,chat,goal_version,evidence,published,updated_at
+                   ) VALUES(?,?,?,?,?,?,0,?)
+                   ON CONFLICT(message_id) DO UPDATE SET
+                     route_key=excluded.route_key,
+                     project=excluded.project,
+                     chat=excluded.chat,
+                     goal_version=excluded.goal_version,
+                     evidence=excluded.evidence,
+                     updated_at=excluded.updated_at""",
+                (
+                    message_id,
+                    route_key,
+                    project,
+                    chat,
+                    goal_version,
+                    json.dumps(safe_evidence, sort_keys=True),
+                    time.time(),
+                ),
+            )
+
+    def pending_verified_deliveries(self) -> list[dict[str, object]]:
+        rows = self.connection.execute(
+            """SELECT message_id,route_key,project,chat,goal_version,evidence
+               FROM browser_wake_verified_delivery
+               WHERE published=0 ORDER BY updated_at,message_id"""
+        ).fetchall()
+        return [
+            {
+                "message_id": str(row[0]),
+                "route_key": str(row[1]),
+                "project": str(row[2]),
+                "chat": str(row[3]),
+                "goal_version": str(row[4]),
+                "evidence": json.loads(row[5] or "{}"),
+            }
+            for row in rows
+        ]
+
+    def mark_verified_published(self, message_id: str) -> None:
+        with self.connection:
+            self.connection.execute(
+                "UPDATE browser_wake_verified_delivery SET published=1,updated_at=? WHERE message_id=?",
+                (time.time(), message_id),
+            )
 
     def claim(self, message_id: str, route_key: str, max_attempts: int = 3) -> bool:
         row = self.delivery(message_id)
@@ -344,7 +422,7 @@ class CommandBrowserSender:
         self.command = parts
         self.timeout = max(5, timeout)
 
-    def __call__(self, message_id: str, destination: str, payload: str) -> None:
+    def __call__(self, message_id: str, destination: str, payload: str) -> DeliveryReceipt:
         request = json.dumps({"message_id": message_id, "destination": destination, "payload": payload}, ensure_ascii=False)
         try:
             proc = subprocess.run(
@@ -364,11 +442,41 @@ class CommandBrowserSender:
             except json.JSONDecodeError:
                 result = {}
         if proc.returncode == 0 and result.get("status") == "sent":
-            return
+            returned_id = str(result.get("message_id") or "")
+            if returned_id != message_id:
+                raise BrowserWakeUncertainError("sender confirmation message_id mismatch")
+            verified = all((
+                result.get("delivery_verified") is True,
+                result.get("destination_verified") is True,
+                result.get("persisted_after_reload") is True,
+            ))
+            return DeliveryReceipt(
+                message_id=message_id,
+                verified=verified,
+                verification_source=str(result.get("verification_source") or ""),
+                persisted_after_reload=result.get("persisted_after_reload") is True,
+                destination_verified=result.get("destination_verified") is True,
+                transport=str(result.get("transport") or ""),
+            )
         reason = str(result.get("error") or proc.stderr.strip() or "browser sender failed")[:240]
         if result.get("safe_to_retry") is True:
             raise BrowserWakePreSendError(reason)
         raise BrowserWakeUncertainError(reason)
+
+
+def format_verified_delivery_event(record: Mapping[str, object]) -> str:
+    evidence = sanitize(record.get("evidence", {}))
+    return "\n".join([
+        "BROWSER_WAKE_DELIVERY",
+        f"PROJECT: {record.get('project', '')}",
+        f"CHAT: {record.get('chat', '')}",
+        f"GOAL_VERSION: {record.get('goal_version', '')}",
+        f"WAKE_ID: {record.get('message_id', '')}",
+        "DELIVERY_STATUS: VERIFIED",
+        "DELIVERY_VERIFIED: true",
+        "SOURCE: browser_wake_verified_delivery_v1",
+        f"EVIDENCE: {json.dumps(evidence, sort_keys=True)}",
+    ])
 
 
 class WakeCoordinator:
@@ -376,12 +484,13 @@ class WakeCoordinator:
         self,
         connection: sqlite3.Connection,
         routes: BrowserRouteRegistry,
-        sender: Callable[[str, str, str], None],
+        sender: Callable[[str, str, str], DeliveryReceipt | None],
         *,
         master_repo: str,
         master_issue: int,
         debounce_seconds: float = 10.0,
         now: Callable[[], float] = time.time,
+        verified_delivery_reporter: Callable[[dict[str, object]], None] | None = None,
     ):
         self.ledger = WakeLedger(connection)
         self.routes = routes
@@ -390,6 +499,7 @@ class WakeCoordinator:
         self.master_issue = int(master_issue)
         self.debounce_seconds = max(0.0, float(debounce_seconds))
         self.now = now
+        self.verified_delivery_reporter = verified_delivery_reporter
         self.ledger.recover_interrupted()
 
     def bootstrap(self, items: list[Mapping]) -> int:
@@ -402,11 +512,13 @@ class WakeCoordinator:
     def reconcile(self, items: list[Mapping], *, replay_existing: bool = False) -> dict[str, int | str]:
         if not replay_existing and self.ledger.get_int("scan_cursor", 0) == 0:
             cursor = self.bootstrap(items)
+            verified_events = self._flush_verified_delivery_events()
             return {
                 "state": "BOOTSTRAPPED",
                 "cursor": cursor,
                 "worker_wakes": 0,
                 "master_wakes": 0,
+                "verified_delivery_events": verified_events,
                 "uncertain_deliveries": len(self.ledger.uncertain_deliveries()),
             }
 
@@ -434,12 +546,14 @@ class WakeCoordinator:
             self.ledger.add_pending_master(relevant_master_ids, max_seen, self.now())
 
         worker_wakes = self._flush_worker_pending()
+        verified_events = self._flush_verified_delivery_events()
         master_wakes = self._flush_master_pending()
         return {
             "state": "OK",
             "cursor": max_seen,
             "worker_wakes": worker_wakes,
             "master_wakes": master_wakes,
+            "verified_delivery_events": verified_events,
             "uncertain_deliveries": len(self.ledger.uncertain_deliveries()),
         }
 
@@ -480,6 +594,19 @@ class WakeCoordinator:
                 self.ledger.remove_pending_worker(message_id)
         return sent
 
+    def _flush_verified_delivery_events(self) -> int:
+        if not self.verified_delivery_reporter:
+            return 0
+        published = 0
+        for record in self.ledger.pending_verified_deliveries():
+            try:
+                self.verified_delivery_reporter(record)
+            except Exception:
+                continue
+            self.ledger.mark_verified_published(str(record["message_id"]))
+            published += 1
+        return published
+
     def _flush_master_pending(self) -> int:
         pending = self.ledger.pending_master()
         if not pending:
@@ -514,7 +641,7 @@ class WakeCoordinator:
         if not self.ledger.claim(message_id, route_key):
             return False
         try:
-            self.sender(message_id, destination, payload)
+            receipt = self.sender(message_id, destination, payload)
         except BrowserWakePreSendError as exc:
             self.ledger.finish(message_id, "FAILED_PRE_SEND", str(exc))
             return False
@@ -525,6 +652,27 @@ class WakeCoordinator:
             self.ledger.finish(message_id, "UNCERTAIN", f"{type(exc).__name__}: {exc}")
             return False
         self.ledger.finish(message_id, "DELIVERED")
+        if isinstance(receipt, DeliveryReceipt) and receipt.verified and route_key != MASTER_ROUTE_KEY:
+            fields = _fields(payload)
+            project = fields.get("PROJECT", "")
+            chat = fields.get("CHAT", "")
+            goal_version = fields.get("GOAL_VERSION", "")
+            expected_route = f"Projekt: {project} → Chat: {chat}"
+            if project and chat and goal_version and route_key == expected_route:
+                self.ledger.record_verified_delivery(
+                    message_id,
+                    route_key,
+                    project,
+                    chat,
+                    goal_version,
+                    {
+                        "reason": "VERIFIED_BROWSER_WAKE_DELIVERY",
+                        "verification_source": receipt.verification_source,
+                        "persisted_after_reload": receipt.persisted_after_reload,
+                        "destination_verified": receipt.destination_verified,
+                        "transport": receipt.transport,
+                    },
+                )
         return True
 
 
@@ -550,14 +698,19 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("BROWSER_CHAT_ROUTES_FILE is required")
     routes = BrowserRouteRegistry.from_file(args.routes_file)
     sender = CommandBrowserSender(args.browser_command)
+    from .github_client import GitHubClient
+    gh = GitHubClient.from_env()
     connection = sqlite3.connect(args.db)
     coordinator = WakeCoordinator(
         connection, routes, sender,
         master_repo=args.master_repo, master_issue=args.master_issue,
         debounce_seconds=args.debounce_seconds,
+        verified_delivery_reporter=lambda record: gh.post_issue_comment(
+            args.master_repo,
+            args.master_issue,
+            format_verified_delivery_event(record),
+        ),
     )
-    from .github_client import GitHubClient
-    gh = GitHubClient.from_env()
 
     def run_once() -> dict[str, int | str]:
         return coordinator.reconcile(

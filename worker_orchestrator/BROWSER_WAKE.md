@@ -29,6 +29,13 @@ The browser relay never reads ChatGPT responses and never copies ChatGPT output 
 6. A possible post-click crash is `UNCERTAIN` and is never retried automatically.
 7. Only failures proven to happen before Send may retry, with a hard maximum of three attempts.
 8. First activation bootstraps to the current GitHub cursor; historical events are not replayed unless `--replay-existing` is explicitly used.
+9. Canonical `RUNNING` is not inferred from Send, navigation, `IN_FLIGHT`,
+   `UNCERTAIN`, or helper prose. The web helper must verify persistence of the
+   wake after reload in the same exact conversation. Browser-Wake persists that
+   receipt, publishes one `BROWSER_WAKE_DELIVERY` source event, and the
+   Orchestrator promotes only the matching current assigned goal.
+10. Verified-delivery publication is retried from SQLite without re-sending the
+    wake. Stale goal versions and terminal worker states fail closed.
 
 The desired steady-state property is:
 

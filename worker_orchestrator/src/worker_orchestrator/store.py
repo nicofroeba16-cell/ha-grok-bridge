@@ -88,10 +88,23 @@ class Registry:
             c.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version', ?)", (str(SCHEMA_VERSION),))
 
     def recover_interrupted(self) -> list[str]:
-        rows = self.conn.execute("SELECT worker_key FROM workers WHERE state=?", (LifecycleState.RUNNING,)).fetchall()
-        keys = [r[0] for r in rows]
+        rows = self.conn.execute(
+            "SELECT worker_key,session_state FROM workers WHERE state=?",
+            (LifecycleState.RUNNING,),
+        ).fetchall()
+        keys: list[str] = []
         with self.tx() as c:
-            for key in keys:
+            for row in rows:
+                key = str(row[0])
+                try:
+                    session_state = json.loads(row[1] or "{}")
+                except json.JSONDecodeError:
+                    session_state = {}
+                if isinstance(session_state, dict) and session_state.get("verified_wake_delivery"):
+                    # Browser-verified Auto Chat work executes outside this process.
+                    # A daemon restart must not invent a redispatch or erase RUNNING.
+                    continue
+                keys.append(key)
                 c.execute(
                     "UPDATE workers SET state=?, recovery_count=recovery_count+1, last_progress=?, updated_at=CURRENT_TIMESTAMP WHERE worker_key=?",
                     (LifecycleState.ASSIGNED, "Recovered after orchestrator restart; safe re-dispatch required.", key),

@@ -75,18 +75,20 @@ async function waitForAssistantCompletion(page, before, timeoutMs = 120000) {
   return false;
 }
 
-async function waitForPersistedUserTurn(page, expected, timeoutMs = 60000) {
+async function waitForPersistedUserTurn(page, expected, expectedPath, timeoutMs = 60000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
-      const state = await page.evaluate((expected) => {
+      const state = await page.evaluate(({ expected, expectedPath }) => {
         const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
-        const inConversation = location.hostname === 'chatgpt.com' && location.pathname.includes('/c/');
+        const currentPath = location.pathname.replace(/\/$/, '');
+        const inConversation = location.hostname === 'chatgpt.com' && currentPath.includes('/c/');
+        const sameConversation = currentPath === expectedPath;
         const persisted = [...document.querySelectorAll('[data-message-author-role="user"]')]
           .some((turn) => normalize(turn.innerText || turn.textContent || '').includes(expected));
-        return { inConversation, persisted };
-      }, expected);
-      if (state.inConversation && state.persisted) return true;
+        return { inConversation, sameConversation, persisted };
+      }, { expected, expectedPath });
+      if (state.inConversation && state.sameConversation && state.persisted) return true;
     } catch (_) {}
     await sleep(500);
   }
@@ -246,15 +248,10 @@ async function openHistorySearch(page) {
 }
 
 async function resolveByTitle(page, title) {
+  // A cached title->URL mapping is not positive route verification. Resolve the
+  // exact visible title every time before a verified send; cache only records
+  // the most recently observed concrete URL for diagnostics/reuse elsewhere.
   const cache = loadCache();
-  if (cache[title]) {
-    try {
-      return validateConcreteUrl(cache[title]);
-    } catch (_) {
-      delete cache[title];
-      saveCache(cache);
-    }
-  }
 
   await page.goto('https://chatgpt.com/', { waitUntil: 'domcontentloaded', timeout: 30000 });
   await new Promise((resolve) => setTimeout(resolve, 1500));
@@ -340,8 +337,11 @@ async function main() {
 
     await page.goto(destination, { waitUntil: 'domcontentloaded', timeout: 30000 });
     const loaded = new URL(page.url());
+    const expectedPath = new URL(destination).pathname.replace(/\/$/, '');
+    const loadedPath = loaded.pathname.replace(/\/$/, '');
     if (loaded.hostname !== 'chatgpt.com') throw new Error('ChatGPT session redirected away from chatgpt.com');
     if (!loaded.pathname.includes('/c/')) throw new Error('ChatGPT conversation did not load; login may be required');
+    if (loadedPath !== expectedPath) throw new Error('ChatGPT conversation route verification failed before send');
 
     const composerSelector = [
       '[data-testid="prompt-textarea"]',
@@ -403,16 +403,18 @@ async function main() {
     } catch (_) {
       // A navigation timeout after Send is uncertain; continue read-only polling.
     }
-    if (!await waitForPersistedUserTurn(page, expectedPayload)) {
-      throw new Error('post-send delivery was not persisted after ChatGPT reload');
+    if (!await waitForPersistedUserTurn(page, expectedPayload, expectedPath)) {
+      throw new Error('post-send delivery was not persisted in the intended ChatGPT conversation after reload');
     }
 
     process.stdout.write(JSON.stringify({
       status: 'sent',
       message_id: request.messageId,
       delivery_verified: true,
+      destination_verified: true,
       persisted_after_reload: true,
       response_completed_before_reload: true,
+      verification_source: 'persisted_user_turn_after_reload_same_conversation',
       output_scraped: false,
     }) + '\n');
   } catch (error) {

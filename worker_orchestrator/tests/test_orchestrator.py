@@ -10,8 +10,15 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from worker_orchestrator.browser_wake import format_verified_delivery_event
 from worker_orchestrator.cli import main as cli_main, make_reporter, reconcile
-from worker_orchestrator.engine import Orchestrator, ReportFormatError, format_report, report_fingerprint
+from worker_orchestrator.engine import (
+    Orchestrator,
+    ReportFormatError,
+    format_report,
+    parse_verified_delivery_events,
+    report_fingerprint,
+)
 from worker_orchestrator.goals import parse_goal_text, parse_goals
 from worker_orchestrator.models import Goal, LifecycleState, WorkerResult, normalize_worker_result
 from worker_orchestrator.security import redact_text
@@ -76,6 +83,149 @@ class Harness(unittest.TestCase):
         self.assertTrue(changed)
         self.assertEqual(row["state"], "ASSIGNED")
         self.assertNotEqual(g1.hash, g2.hash)
+
+    def test_verified_delivery_formatter_and_parser_contract(self):
+        body = format_verified_delivery_event({
+            "message_id": "worker-wake:req:v1:child",
+            "project": "P",
+            "chat": "C",
+            "goal_version": "v1-child",
+            "evidence": {
+                "reason": "VERIFIED_BROWSER_WAKE_DELIVERY",
+                "destination_verified": True,
+                "persisted_after_reload": True,
+                "verification_source": "persisted_user_turn_after_reload_same_conversation",
+            },
+        })
+        parsed = parse_verified_delivery_events([{"id": 699, "body": body}])
+        self.assertEqual(len(parsed), 1)
+        self.assertEqual(parsed[0]["worker_key"], "Projekt: P → Chat: C")
+        self.assertEqual(parsed[0]["goal_version"], "v1-child")
+        self.assertEqual(parsed[0]["wake_id"], "worker-wake:req:v1:child")
+
+    def test_verified_browser_delivery_promotes_current_assigned_goal_to_running_once(self):
+        g = self.goal(explicit_version="wake-v1", workstream_issue=45)
+        self.registry.upsert_goal(g)
+        worker = ScriptedWorker([])
+        engine = self.engine(worker)
+        body = "\n".join([
+            "BROWSER_WAKE_DELIVERY",
+            f"PROJECT: {g.project}",
+            f"CHAT: {g.chat}",
+            f"GOAL_VERSION: {g.version}",
+            "WAKE_ID: worker-wake:req:wake-v1:child",
+            "DELIVERY_STATUS: VERIFIED",
+            "DELIVERY_VERIFIED: true",
+            "SOURCE: browser_wake_verified_delivery_v1",
+            'EVIDENCE: {"reason":"VERIFIED_BROWSER_WAKE_DELIVERY","destination_verified":true,"persisted_after_reload":true,"verification_source":"persisted_user_turn_after_reload_same_conversation"}',
+        ])
+        items = [{"id": 700, "body": body}]
+        engine.ingest_items(items)
+
+        row = self.registry.get(g.key)
+        self.assertEqual(row["state"], LifecycleState.RUNNING)
+        self.assertEqual(worker.calls, 0)
+        evidence = json.loads(row["completion_evidence"])
+        self.assertEqual(evidence["reason"], "VERIFIED_BROWSER_WAKE_DELIVERY")
+        self.assertTrue(evidence["persisted_after_reload"])
+        events = [e for e in self.registry.events(g.key) if e["event_type"] == "VERIFIED_WAKE_DELIVERY"]
+        self.assertEqual(len(events), 1)
+        running_reports = [
+            report for report in self.reports
+            if report[0] == "WORKER_STATUS" and report[2].get("state") == LifecycleState.RUNNING
+        ]
+        self.assertEqual(len(running_reports), 1)
+
+        engine.ingest_items(items)
+        events = [e for e in self.registry.events(g.key) if e["event_type"] == "VERIFIED_WAKE_DELIVERY"]
+        self.assertEqual(len(events), 1)
+        running_reports = [
+            report for report in self.reports
+            if report[0] == "WORKER_STATUS" and report[2].get("state") == LifecycleState.RUNNING
+        ]
+        self.assertEqual(len(running_reports), 1)
+
+    def test_unverified_or_nonverified_delivery_states_never_promote_running(self):
+        for delivery_status, verified in (
+            ("FAILED_PRE_SEND", "false"),
+            ("IN_FLIGHT", "false"),
+            ("UNCERTAIN", "false"),
+            ("DELIVERED", "false"),
+        ):
+            with self.subTest(delivery_status=delivery_status):
+                g = self.goal(
+                    project=f"Wake {delivery_status}",
+                    chat=delivery_status,
+                    explicit_version=f"wake-{delivery_status}",
+                )
+                self.registry.upsert_goal(g)
+                engine = self.engine(ScriptedWorker([]))
+                body = "\n".join([
+                    "BROWSER_WAKE_DELIVERY",
+                    f"PROJECT: {g.project}",
+                    f"CHAT: {g.chat}",
+                    f"GOAL_VERSION: {g.version}",
+                    f"WAKE_ID: wake-{delivery_status}",
+                    f"DELIVERY_STATUS: {delivery_status}",
+                    f"DELIVERY_VERIFIED: {verified}",
+                    "SOURCE: browser_wake_verified_delivery_v1",
+                ])
+                engine.ingest_items([{"id": 701, "body": body}])
+                self.assertEqual(self.registry.get(g.key)["state"], LifecycleState.ASSIGNED)
+
+    def test_verified_delivery_never_regresses_terminal_or_blocked_state(self):
+        protected = (
+            LifecycleState.DONE,
+            LifecycleState.READY,
+            LifecycleState.WAITING_FOR_USER,
+            LifecycleState.BLOCKED,
+            LifecycleState.STALLED,
+        )
+        for state in protected:
+            with self.subTest(state=state):
+                g = self.goal(
+                    project=f"Protected {state}",
+                    chat=str(state),
+                    explicit_version=f"protected-{state}",
+                )
+                self.registry.upsert_goal(g)
+                self.registry.set_state(g.key, state)
+                engine = self.engine(ScriptedWorker([]))
+                body = "\n".join([
+                    "BROWSER_WAKE_DELIVERY",
+                    f"PROJECT: {g.project}",
+                    f"CHAT: {g.chat}",
+                    f"GOAL_VERSION: {g.version}",
+                    f"WAKE_ID: wake-{state}",
+                    "DELIVERY_STATUS: VERIFIED",
+                    "DELIVERY_VERIFIED: true",
+                    "SOURCE: browser_wake_verified_delivery_v1",
+                    'EVIDENCE: {"reason":"VERIFIED_BROWSER_WAKE_DELIVERY","destination_verified":true,"persisted_after_reload":true,"verification_source":"persisted_user_turn_after_reload_same_conversation"}',
+                ])
+                engine.ingest_items([{"id": 702, "body": body}])
+                self.assertEqual(self.registry.get(g.key)["state"], state)
+
+    def test_stale_verified_delivery_does_not_promote_changed_goal(self):
+        current = self.goal(explicit_version="new-goal")
+        self.registry.upsert_goal(current)
+        engine = self.engine(ScriptedWorker([]))
+        body = "\n".join([
+            "BROWSER_WAKE_DELIVERY",
+            f"PROJECT: {current.project}",
+            f"CHAT: {current.chat}",
+            "GOAL_VERSION: old-goal",
+            "WAKE_ID: stale-wake",
+            "DELIVERY_STATUS: VERIFIED",
+            "DELIVERY_VERIFIED: true",
+            "SOURCE: browser_wake_verified_delivery_v1",
+            'EVIDENCE: {"reason":"VERIFIED_BROWSER_WAKE_DELIVERY","destination_verified":true,"persisted_after_reload":true,"verification_source":"persisted_user_turn_after_reload_same_conversation"}',
+        ])
+        engine.ingest_items([{"id": 703, "body": body}])
+        self.assertEqual(self.registry.get(current.key)["state"], LifecycleState.ASSIGNED)
+        self.assertFalse(any(
+            e["event_type"] == "VERIFIED_WAKE_DELIVERY"
+            for e in self.registry.events(current.key)
+        ))
 
     def test_done_requires_all_criteria_and_green_ci(self):
         g = self.goal()
@@ -282,6 +432,27 @@ class Harness(unittest.TestCase):
         self.assertEqual(recovered, [g.key])
         self.assertEqual(self.registry.get(g.key)["state"], "ASSIGNED")
         self.assertEqual(self.registry.get(g.key)["recovery_count"], 1)
+
+    def test_restart_preserves_browser_verified_external_running_worker(self):
+        g = self.goal(project="Browser Wake", chat="External", explicit_version="wake-v1")
+        self.registry.upsert_goal(g)
+        self.registry.set_state(
+            g.key,
+            LifecycleState.RUNNING,
+            session_state={
+                "verified_wake_delivery": {
+                    "wake_id": "worker-wake:req:wake-v1:child",
+                    "reason": "VERIFIED_BROWSER_WAKE_DELIVERY",
+                }
+            },
+        )
+        self.registry.close()
+        self.registry = Registry(self.db)
+        recovered = self.registry.recover_interrupted()
+        self.assertEqual(recovered, [])
+        row = self.registry.get(g.key)
+        self.assertEqual(row["state"], LifecycleState.RUNNING)
+        self.assertEqual(row["recovery_count"], 0)
 
     def test_status_is_read_only_and_does_not_recover_running_worker(self):
         g = self.goal(project="Status", chat="Probe")

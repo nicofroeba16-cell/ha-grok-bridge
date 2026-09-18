@@ -36,6 +36,13 @@ class SearchRouteRegistryTests(unittest.TestCase):
                 }
             }))
 
+    def test_duplicate_title_destination_fails_closed(self):
+        with self.assertRaises(BrowserWakeError):
+            SearchRouteRegistry.from_json(json.dumps({
+                "worker-a": {"title": "Same Chat"},
+                "worker-b": {"title": "Same Chat"},
+            }))
+
     def test_multiline_title_fails_closed(self):
         with self.assertRaises(BrowserWakeError):
             SearchRouteRegistry.from_json(json.dumps({"worker": {"title": "Run 24\nWatch"}}))

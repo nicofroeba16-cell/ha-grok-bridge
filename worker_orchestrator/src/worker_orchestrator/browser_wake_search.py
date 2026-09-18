@@ -13,6 +13,7 @@ from .browser_wake import (
     CommandBrowserSender,
     WakeCoordinator,
     build_parser,
+    format_verified_delivery_event,
 )
 
 
@@ -32,10 +33,23 @@ class SearchRouteRegistry(BrowserRouteRegistry):
 
     @classmethod
     def from_json(cls, raw: str) -> "SearchRouteRegistry":
-        value = json.loads(raw)
+        def unique_pairs(pairs):
+            result = {}
+            for key, value in pairs:
+                key = str(key)
+                if key in result:
+                    raise BrowserWakeError(f"browser route registry contains duplicate key: {key}")
+                result[key] = value
+            return result
+
+        try:
+            value = json.loads(raw, object_pairs_hook=unique_pairs)
+        except json.JSONDecodeError as exc:
+            raise BrowserWakeError(f"invalid BROWSER_CHAT_ROUTES_JSON: {exc.msg}") from exc
         if not isinstance(value, Mapping):
             raise BrowserWakeError("BROWSER_CHAT_ROUTES_JSON must be an object")
         routes: dict[str, BrowserRoute] = {}
+        destinations: dict[str, str] = {}
         for key, config in value.items():
             if not isinstance(config, Mapping):
                 raise BrowserWakeError(f"browser route {key} must be an object")
@@ -50,7 +64,13 @@ class SearchRouteRegistry(BrowserRouteRegistry):
             else:
                 title = cls._validate_title(str(config.get("title", "")))
                 destination = f"chat-title:{title}"
-            routes[str(key)] = BrowserRoute(str(key), destination)
+            route_key = str(key)
+            if destination in destinations and destinations[destination] != route_key:
+                raise BrowserWakeError(
+                    f"browser route destination is ambiguous for {route_key} and {destinations[destination]}"
+                )
+            destinations[destination] = route_key
+            routes[route_key] = BrowserRoute(route_key, destination)
         return cls(routes)
 
     @classmethod
@@ -64,6 +84,10 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("BROWSER_CHAT_ROUTES_FILE is required")
     routes = SearchRouteRegistry.from_file(args.routes_file)
     sender = CommandBrowserSender(args.browser_command)
+
+    from .github_client import GitHubClient
+
+    gh = GitHubClient.from_env()
     connection = sqlite3.connect(args.db)
     coordinator = WakeCoordinator(
         connection,
@@ -72,11 +96,12 @@ def main(argv: list[str] | None = None) -> int:
         master_repo=args.master_repo,
         master_issue=args.master_issue,
         debounce_seconds=args.debounce_seconds,
+        verified_delivery_reporter=lambda record: gh.post_issue_comment(
+            args.master_repo,
+            args.master_issue,
+            format_verified_delivery_event(record),
+        ),
     )
-
-    from .github_client import GitHubClient
-
-    gh = GitHubClient.from_env()
 
     def run_once() -> dict[str, int | str]:
         return coordinator.reconcile(
