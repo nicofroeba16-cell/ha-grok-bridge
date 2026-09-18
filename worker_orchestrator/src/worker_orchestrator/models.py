@@ -28,7 +28,7 @@ GATED_ACTIONS = frozenset({
 
 DEFAULT_ALLOWED_REPOSITORIES = frozenset({
     "nicofroeba16-cell/ha-grok-bridge", "nicofroeba16-cell/HA-CONFIG",
-    "nicofroeba16-cell/ha-grok-bridge-live", "nicofroeba16-cell/File-Bridge-mcp",
+    "nicofroeba16-cell/File-Bridge-mcp",
     "nicofroeba16-cell/ha-ios-next", "nicofroeba16-cell/ha-ios-next-ios",
     "nicofroeba16-cell/Intelligence-Suite-", "nicofroeba16-cell/AmazonTV-App",
     "nicofroeba16-cell/Brother-Printer-Companion",
