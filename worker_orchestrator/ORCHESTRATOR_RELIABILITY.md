@@ -56,11 +56,14 @@ retryable from the ledger without re-sending the wake. The Orchestrator accepts
 only current-goal events with the full persisted/destination verification evidence
 and promotes only `ASSIGNED`/eligible idle state to `RUNNING`.
 
-`FAILED_PRE_SEND`, `IN_FLIGHT`, `UNCERTAIN`, unverified `DELIVERED`, stale
-goal versions, ambiguous/wrong routes, and terminal states never promote
-`RUNNING`. Duplicate verified evidence is idempotent. Browser-verified external
-`RUNNING` workers are also preserved across an Orchestrator daemon restart
-instead of being incorrectly requeued as local interrupted execution.
+The later shared Auto policy `auto-chat-status-report-and-resume-v1` refines
+operational status resolution without weakening delivery safety: `FAILED_PRE_SEND`
+and `IN_FLIGHT` remain non-running/activating, while an explicitly classified
+post-send `wake_uncertain` for the newest current goal is reported operationally
+as `RUNNING` with `activation_confirmed=false`. Positive verification upgrades
+provenance to confirmed `wake_verified`. Older terminal predecessor evidence
+cannot suppress a newer assigned successor, while a terminal state for that same
+current goal remains protected. Duplicate evidence stays idempotent.
 
 ## Verification contract
 

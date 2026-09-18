@@ -7,6 +7,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Callable, Iterable, Mapping
 
+from .auto_policy import policy_reference_lines
 from .security import sanitize
 
 
@@ -50,6 +51,8 @@ class ChildGoal:
             lines.append(f"DEPENDS_ON: {','.join(self.dependencies)}")
         lines.extend(["DONE_CRITERIA:", *[f"- {item}" for item in self.done_criteria]])
         lines.extend([
+            "",
+            *policy_reference_lines(),
             "",
             "SAFETY:",
             "No merge, deploy, restart, runner/runtime mutation, device/network/HA mutation, "

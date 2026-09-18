@@ -114,6 +114,89 @@ class BrowserWakeTests(unittest.TestCase):
         with self.assertRaises(BrowserWakeError):
             BrowserRouteRegistry.from_json(duplicate_destination)
 
+    def test_invalid_master_request_is_observable_and_corrected_request_wakes_once(self):
+        sender = RecordingSender()
+        coord = self.coordinator(sender)
+        invalid = {
+            "id": 100,
+            "body": "\n".join([
+                "MASTER_REQUEST",
+                "REQUEST_ID: broken",
+                "GOAL_VERSION: broken-v1",
+                "REQUEST: malformed request",
+                "WORK_GRAPH_JSON:",
+                '[{"id":"child","project":"P","chat":"C","repository":"nicofroeba16-cell/ha-grok-bridge","branch":"feat/test","done_criteria":["green"]}]',
+            ]),
+        }
+        result = coord.reconcile([invalid], replay_existing=True)
+        self.assertEqual(result["worker_wakes"], 0)
+        self.assertEqual(result["rejected_master_requests"], 1)
+        self.assertEqual(result["cursor"], 100)
+        self.assertEqual(
+            result["rejected_master_request_errors"][0]["source_comment_id"],
+            100,
+        )
+        rejected = coord.ledger.rejected_master_requests()
+        self.assertEqual(rejected[0]["source_comment_id"], 100)
+        self.assertIn("GLOBAL_DONE_CRITERIA", rejected[0]["reason"])
+        self.assertNotIn("malformed request", rejected[0]["reason"])
+
+        corrected = {"id": 101, "body": request_body("fixed", "fixed-v1")}
+        result = coord.reconcile([invalid, corrected], replay_existing=True)
+        self.assertEqual(result["worker_wakes"], 1)
+        self.assertEqual(len(sender.calls), 1)
+        payload = sender.calls[0][2]
+        self.assertIn("AUTO_POLICY_ID: auto-chat-status-report-and-resume-v1", payload)
+        self.assertIn("STATUS_CHECKPOINT_RULE:", payload)
+
+        result = coord.reconcile([invalid, corrected], replay_existing=True)
+        self.assertEqual(result["worker_wakes"], 0)
+        self.assertEqual(len(sender.calls), 1)
+
+    def test_policy_sync_uses_registered_workers_not_all_routes_and_is_idempotent(self):
+        sender = RecordingSender()
+        coord = self.coordinator(sender)
+        rows = [{
+            "worker_key": WORKER_KEY,
+            "goal_version": "current-v1",
+        }]
+        self.assertEqual(coord.queue_policy_sync(rows), 1)
+        self.assertEqual(coord.queue_policy_sync(rows), 0)
+        pending = coord.ledger.pending_workers()
+        self.assertEqual(len(pending), 1)
+        self.assertTrue(pending[0][0].startswith("auto-policy-sync:"))
+        self.assertIn("AUTO_POLICY_SYNC", pending[0][3])
+        self.assertIn("STATUS_CURRENT_GOAL_RULE:", pending[0][3])
+
+        self.assertEqual(coord._flush_worker_pending(), 1)
+        self.assertEqual(len(sender.calls), 1)
+        self.assertEqual(coord.queue_policy_sync(rows), 0)
+
+    def test_policy_sync_ignores_unregistered_route_entries(self):
+        legacy_key = "Projekt: Legacy → Chat: Old Chat"
+        registry = BrowserRouteRegistry.from_json(
+            "{"
+            f'"{MASTER_ROUTE_KEY}":{{"url":"{MASTER_URL}"}},'
+            f'"{WORKER_KEY}":{{"url":"{WORKER_URL}"}},'
+            f'"{legacy_key}":{{"url":"https://chatgpt.com/c/99999999-2222-3333-4444-555555555555"}}'
+            "}"
+        )
+        sender = RecordingSender()
+        coord = WakeCoordinator(
+            self.conn,
+            registry,
+            sender,
+            master_repo="nicofroeba16-cell/ha-grok-bridge",
+            master_issue=3,
+            debounce_seconds=0,
+            now=lambda: 1000.0,
+        )
+        rows = [{"worker_key": WORKER_KEY, "goal_version": "v1"}]
+        self.assertEqual(coord.queue_policy_sync(rows), 1)
+        pending_routes = [row[1] for row in coord.ledger.pending_workers()]
+        self.assertEqual(pending_routes, [WORKER_KEY])
+        self.assertNotIn(legacy_key, pending_routes)
+
     def test_first_start_bootstraps_without_waking_historical_events(self):
         sender = RecordingSender()
         coord = self.coordinator(sender)

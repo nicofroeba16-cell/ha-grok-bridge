@@ -128,6 +128,42 @@ write fails after the other succeeds, the worker is persisted as
 so the next reconciliation retries and converges safely. The daemon continues
 serving other workers while this retry remains pending.
 
+## Auto Chat status checkpoint policy
+
+All generated Auto worker GOAL prompts and browser `WORKER_WAKE` payloads carry
+`AUTO_POLICY_ID: auto-chat-status-report-and-resume-v1`. A user message that is
+only `Status`, `Status?`, `Stand` or `Stand?` is a non-stopping checkpoint:
+report concise current state and then continue the already-authorized current
+goal without waiting for another Go.
+
+Current-goal resolution is assignment-first, not worker-report-first. A newer
+canonical Master assignment therefore supersedes an older terminal predecessor.
+For example, an older `WAITING_FOR_USER` export goal cannot suppress a newer
+Library-placement successor. Post-send `wake_uncertain` evidence for that
+successor counts operationally as RUNNING under the current policy, while
+existing live/merge/release/user/device/network/secret gates still remain gates.
+
+Already-active equivalent work is continued without duplicate CI, activation,
+restart or rework. A genuinely current `WAITING_FOR_USER` or `BLOCKED` goal
+is reported and remains gated; current DONE/READY/STALLED or no-goal workers
+remain dormant and invent no work.
+
+Existing registered Auto workers can receive a one-time policy sync through the
+Browser-Wake command:
+
+    browser-wake --orchestrator-db <registry.sqlite3> sync-policy
+
+The sync source is the Orchestrator `workers` registry, not the browser route
+catalog. A route that merely exists for a legacy/non-Auto chat is never selected
+unless that exact canonical worker is already registered. Sync message IDs are
+deterministic, so repeated sync requests are idempotent.
+
+Malformed `MASTER_REQUEST` comments are recorded in the Browser-Wake ledger
+with source comment ID and a sanitized parse reason. Poll output exposes both
+`rejected_master_requests` and the most recent
+`rejected_master_request_errors`; advancing the scan cursor no longer makes a
+parse rejection disappear silently.
+
 ## Least privilege
 
 Use repository-scoped credentials with only the read/write permissions needed for issue status reporting and repository/CI inspection. Keep worker credentials separate from orchestrator credentials. Never place credential values in assignments, logs, issues or committed configuration.

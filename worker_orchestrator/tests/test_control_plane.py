@@ -290,6 +290,15 @@ class ControlPlaneHarness(unittest.TestCase):
         with self.assertRaises(MasterRequestError):
             RouteRegistry.from_json(raw)
 
+    def test_child_goal_prompt_carries_shared_status_resume_policy(self):
+        request = parse_master_request(request_body(), 123)
+        self.assertIsNotNone(request)
+        prompt = request.children[0].prompt(request.version)
+        self.assertIn("AUTO_POLICY_ID: auto-chat-status-report-and-resume-v1", prompt)
+        self.assertIn("STATUS_CHECKPOINT_RULE:", prompt)
+        self.assertIn("STATUS_CURRENT_GOAL_RULE:", prompt)
+        self.assertIn("STATUS_GATE_RULE:", prompt)
+
     def test_invalid_latest_request_blocks_once_without_status_spam(self):
         invalid = {"id": 200, "body": "MASTER_REQUEST\nREQUEST_ID: broken"}
         self.assertEqual(self.control.reconcile([invalid], []), "BLOCKED")

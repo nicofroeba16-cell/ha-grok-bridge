@@ -29,13 +29,27 @@ The browser relay never reads ChatGPT responses and never copies ChatGPT output 
 6. A possible post-click crash is `UNCERTAIN` and is never retried automatically.
 7. Only failures proven to happen before Send may retry, with a hard maximum of three attempts.
 8. First activation bootstraps to the current GitHub cursor; historical events are not replayed unless `--replay-existing` is explicitly used.
-9. Canonical `RUNNING` is not inferred from Send, navigation, `IN_FLIGHT`,
-   `UNCERTAIN`, or helper prose. The web helper must verify persistence of the
-   wake after reload in the same exact conversation. Browser-Wake persists that
-   receipt, publishes one `BROWSER_WAKE_DELIVERY` source event, and the
-   Orchestrator promotes only the matching current assigned goal.
+9. `IN_FLIGHT` remains activating, not RUNNING. Under the current shared
+   Auto policy, an explicitly classified post-send `wake_uncertain` activation
+   counts operationally as RUNNING with `activation_confirmed=false`; positive
+   persistence verification upgrades it to confirmed `wake_verified`.
+   Unclassified uncertainty does not fabricate confirmation.
 10. Verified-delivery publication is retried from SQLite without re-sending the
-    wake. Stale goal versions and terminal worker states fail closed.
+    wake. Current-goal identity wins over older terminal predecessors, while a
+    terminal state belonging to that same current goal remains protected.
+
+### Shared Auto policy sync and parse rejection diagnostics
+
+Generated worker wakes carry the shared `auto-chat-status-report-and-resume-v1`
+policy reference. Existing registered Auto workers can be synchronized once with
+`sync-policy` and `--orchestrator-db`. Eligibility comes from the Orchestrator
+worker registry, never from the browser route catalog alone, so legacy routes
+are not broadcast targets. Deterministic sync message IDs make repeats no-ops.
+
+Malformed `MASTER_REQUEST` input is fail-closed but observable. Browser-Wake
+stores source comment ID plus a sanitized parse reason and returns the total and
+recent rejection records in its reconcile/health JSON. A corrected later request
+can still queue exactly one worker wake after the scan cursor advances.
 
 The desired steady-state property is:
 

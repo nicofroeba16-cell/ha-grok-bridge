@@ -14,6 +14,11 @@ from pathlib import Path
 from typing import Callable, Iterable, Mapping
 from urllib.parse import urlparse
 
+from .auto_policy import (
+    policy_reference_lines,
+    policy_sync_message_id,
+    policy_sync_payload,
+)
 from .control_plane import MasterRequestError, parse_master_request
 from .security import sanitize
 
@@ -204,6 +209,12 @@ class WakeLedger:
                     published INTEGER NOT NULL DEFAULT 0,
                     updated_at REAL NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS browser_wake_rejections (
+                    source_comment_id INTEGER PRIMARY KEY,
+                    kind TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    created_at REAL NOT NULL
+                );
             """)
 
     def get_int(self, key: str, default: int = 0) -> int:
@@ -272,6 +283,33 @@ class WakeLedger:
             )
         ]
         return [self.evaluate_delivery(message_id) for message_id in ids]
+
+    def record_rejection(self, source_comment_id: int, kind: str, reason: str) -> None:
+        safe_reason = str(sanitize(reason))[:240]
+        with self.connection:
+            self.connection.execute(
+                """INSERT OR REPLACE INTO browser_wake_rejections(
+                       source_comment_id,kind,reason,created_at
+                   ) VALUES(?,?,?,?)""",
+                (int(source_comment_id), str(kind)[:64], safe_reason, time.time()),
+            )
+
+    def rejected_master_requests(self) -> list[dict[str, object]]:
+        rows = self.connection.execute(
+            """SELECT source_comment_id,kind,reason,created_at
+               FROM browser_wake_rejections
+               WHERE kind='MASTER_REQUEST'
+               ORDER BY source_comment_id"""
+        ).fetchall()
+        return [
+            {
+                "source_comment_id": int(row[0]),
+                "kind": str(row[1]),
+                "reason": str(row[2]),
+                "created_at": float(row[3]),
+            }
+            for row in rows
+        ]
 
     def record_verified_delivery(
         self,
@@ -509,7 +547,7 @@ class WakeCoordinator:
         self.ledger.set_int("scan_cursor", maximum)
         return maximum
 
-    def reconcile(self, items: list[Mapping], *, replay_existing: bool = False) -> dict[str, int | str]:
+    def reconcile(self, items: list[Mapping], *, replay_existing: bool = False) -> dict[str, object]:
         if not replay_existing and self.ledger.get_int("scan_cursor", 0) == 0:
             cursor = self.bootstrap(items)
             verified_events = self._flush_verified_delivery_events()
@@ -520,6 +558,8 @@ class WakeCoordinator:
                 "master_wakes": 0,
                 "verified_delivery_events": verified_events,
                 "uncertain_deliveries": len(self.ledger.uncertain_deliveries()),
+                "rejected_master_requests": len(self.ledger.rejected_master_requests()),
+                "rejected_master_request_errors": self.ledger.rejected_master_requests()[-5:],
             }
 
         cursor = self.ledger.get_int("scan_cursor", 0)
@@ -555,12 +595,15 @@ class WakeCoordinator:
             "master_wakes": master_wakes,
             "verified_delivery_events": verified_events,
             "uncertain_deliveries": len(self.ledger.uncertain_deliveries()),
+            "rejected_master_requests": len(self.ledger.rejected_master_requests()),
+            "rejected_master_request_errors": self.ledger.rejected_master_requests()[-5:],
         }
 
     def _queue_request(self, body: str, event_id: int) -> None:
         try:
             request = parse_master_request(body, event_id)
-        except MasterRequestError:
+        except MasterRequestError as exc:
+            self.ledger.record_rejection(event_id, "MASTER_REQUEST", str(exc))
             return
         if request is None:
             return
@@ -580,8 +623,35 @@ class WakeCoordinator:
                 "ACTION: New GitHub work is available. Read your assigned workstream issue and Master state, then continue only your owned scope.",
                 "LOOP_GUARD: Do not answer this wake through the browser relay. Report substantive status only through the canonical GitHub workstream log.",
                 "LIVE_GATE: Every live-system mutation still requires separate explicit user approval.",
+                *policy_reference_lines(),
             ])
             self.ledger.queue_worker(message_id, child.worker_key, route.url, payload)
+
+    def queue_policy_sync(self, worker_rows: Iterable[Mapping]) -> int:
+        queued = 0
+        for row in worker_rows:
+            keys = row.keys() if hasattr(row, "keys") else ()
+            worker_key = str(row["worker_key"]) if "worker_key" in keys else ""
+            goal_version = str(row["goal_version"]) if "goal_version" in keys else ""
+            if not worker_key.startswith("Projekt: ") or " → Chat: " not in worker_key:
+                continue
+            if not goal_version:
+                continue
+            route = self.routes.get(worker_key)
+            if route is None:
+                continue
+            message_id = policy_sync_message_id(worker_key)
+            before = len(self.ledger.pending_workers())
+            self.ledger.queue_worker(
+                message_id,
+                worker_key,
+                route.url,
+                policy_sync_payload(worker_key),
+            )
+            after = len(self.ledger.pending_workers())
+            if after > before:
+                queued += 1
+        return queued
 
     def _flush_worker_pending(self) -> int:
         sent = 0
@@ -685,10 +755,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--poll-seconds", type=int, default=int(os.environ.get("BROWSER_WAKE_POLL_SECONDS", "15")))
     parser.add_argument("--debounce-seconds", type=float, default=float(os.environ.get("MASTER_WAKE_DEBOUNCE_SECONDS", "10")))
     parser.add_argument("--browser-command", default=os.environ.get("BROWSER_WAKE_COMMAND", ""))
+    parser.add_argument("--orchestrator-db", default=os.environ.get("ORCHESTRATOR_DB", ""))
     parser.add_argument("--replay-existing", action="store_true")
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("once")
     sub.add_parser("run")
+    sub.add_parser("sync-policy")
     return parser
 
 
@@ -712,13 +784,33 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
 
-    def run_once() -> dict[str, int | str]:
+    def run_once() -> dict[str, object]:
         return coordinator.reconcile(
             gh.read_master_items(args.master_repo, args.master_issue),
             replay_existing=args.replay_existing,
         )
 
     try:
+        if args.cmd == "sync-policy":
+            if not args.orchestrator_db:
+                raise SystemExit("ORCHESTRATOR_DB is required for sync-policy")
+            source = sqlite3.connect(args.orchestrator_db)
+            source.row_factory = sqlite3.Row
+            try:
+                rows = source.execute(
+                    "SELECT worker_key,goal_version FROM workers ORDER BY worker_key"
+                ).fetchall()
+            finally:
+                source.close()
+            queued = coordinator.queue_policy_sync(rows)
+            sent = coordinator._flush_worker_pending()
+            print(json.dumps({
+                "state": "POLICY_SYNC",
+                "registered_workers": len(rows),
+                "queued": queued,
+                "sent": sent,
+            }, sort_keys=True))
+            return 0
         if args.cmd == "once":
             print(json.dumps(run_once(), sort_keys=True))
             return 0
