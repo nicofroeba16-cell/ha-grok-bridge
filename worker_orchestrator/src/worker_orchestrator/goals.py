@@ -27,6 +27,11 @@ def _normalize_field(name: str) -> str:
     return name.strip().upper().replace("-", "_").replace(" ", "_")
 
 
+
+def _bool_field(value: str | None) -> bool:
+    return str(value or '').strip().lower() in {"1", "true", "yes"}
+
+
 def _criteria(lines: list[str]) -> tuple[str, ...]:
     items: list[str] = []
     active = False
@@ -99,6 +104,8 @@ def parse_goal_text(text: str, *, source_comment_id: int | None = None) -> Goal 
             for x in fields.get("APPROVED_ACTIONS", "").split(",")
             if x.strip()
         ),
+        ui_visual_scope=_bool_field(fields.get("UI_VISUAL_SCOPE")),
+        visual_media_required=_bool_field(fields.get("VISUAL_MEDIA_REQUIRED")),
         source_comment_id=source_comment_id,
     )
 

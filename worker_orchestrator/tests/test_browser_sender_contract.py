@@ -59,7 +59,39 @@ class BrowserSenderCompletionContractTests(unittest.TestCase):
         self.assertLess(click, post)
         self.assertEqual(source.count("await send.click();"), 1)
         self.assertIn("exactPrefixOnly", source)
+        self.assertIn("collapsible-user-message-content", source)
         self.assertIn("persisted exactly once without a prefix-only wake turn", source)
+
+
+    def test_existing_exact_hydrated_tab_is_preferred_over_fresh_navigation(self):
+        source = HELPER.read_text()
+        existing = source.index("existingExactHydratedPage(browser, destination)")
+        fresh = source.index("openHydratedDestination(browser, destination)")
+        self.assertLess(existing, fresh)
+        self.assertIn("existing_exact_hydrated", source)
+        self.assertIn("SHELL_ONLY_NO_COMPOSER", source)
+        self.assertNotIn("pages.find((candidate) => candidate.url().startsWith('https://chatgpt.com'))", source)
+        self.assertIn("const resolver = await browser.newPage()", source)
+
+    def test_owned_stale_draft_is_the_only_draft_auto_cleared(self):
+        source = HELPER.read_text()
+        self.assertIn("OWNED_STALE_WAKE_DRAFT", source)
+        self.assertIn("FOREIGN_DRAFT", source)
+        self.assertIn("clearComposerAtomically", source)
+        self.assertIn("NAKED_WAKE_PREFIX_PRESENT", source)
+        foreign = source.index("FOREIGN_DRAFT: refusing to overwrite")
+        atomic = source.index("await setComposerTextAtomically(page, composer, request.payload)")
+        self.assertLess(foreign, atomic)
+
+    def test_send_commit_marker_precedes_single_send_click(self):
+        source = HELPER.read_text()
+        marker = source.index("writeSendCommitMarker(request.messageId)")
+        committed = source.index("sendCommitted = true", marker)
+        click = source.index("await send.click()", committed)
+        self.assertLess(marker, committed)
+        self.assertLess(committed, click)
+        self.assertIn("BROWSER_WAKE_SEND_MARKER_DIR", source)
+        self.assertEqual(source.count("await send.click();"), 1)
 
     def test_atomic_composer_fixture_models_enter_to_send_regression(self):
         proc = subprocess.run(

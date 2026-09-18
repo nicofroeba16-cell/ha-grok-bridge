@@ -52,6 +52,8 @@ class Goal:
     files: tuple[str, ...] = ()
     scope: str = ""
     approved_actions: tuple[str, ...] = ()
+    ui_visual_scope: bool = False
+    visual_media_required: bool = False
     source_comment_id: int | None = None
 
     @property
@@ -72,6 +74,10 @@ class Goal:
             "scope": self.scope.strip(),
             "approved_actions": sorted(x.strip() for x in self.approved_actions),
         }
+        if self.ui_visual_scope:
+            payload["ui_visual_scope"] = True
+        if self.visual_media_required:
+            payload["visual_media_required"] = True
         return sha256(_canon(payload).encode()).hexdigest()
 
     @property

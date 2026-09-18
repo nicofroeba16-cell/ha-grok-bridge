@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Callable, Iterable, Mapping
 
 from .auto_policy import policy_reference_lines
+from .media_policy import AUTO_MEDIA_POLICY_ID
 from .security import sanitize
 
 
@@ -27,6 +28,8 @@ class ChildGoal:
     workstream_issue: int | None = None
     files: tuple[str, ...] = ()
     scope: str = ""
+    ui_visual_scope: bool = False
+    visual_media_required: bool = False
 
     @property
     def worker_key(self) -> str:
@@ -40,6 +43,8 @@ class ChildGoal:
             f"GOAL_VERSION: {request_version}-{self.child_id}",
             f"REPOSITORY: {self.repository}",
             f"BRANCH: {self.branch}",
+            f"UI_VISUAL_SCOPE: {'true' if self.ui_visual_scope else 'false'}",
+            f"VISUAL_MEDIA_REQUIRED: {'true' if self.visual_media_required else 'false'}",
         ]
         if self.workstream_issue is not None:
             lines.append(f"WORKSTREAM_ISSUE: {self.workstream_issue}")
@@ -53,6 +58,8 @@ class ChildGoal:
         lines.extend([
             "",
             *policy_reference_lines(),
+            f"AUTO_MEDIA_POLICY_ID: {AUTO_MEDIA_POLICY_ID}",
+            "VISUAL_MEDIA_RULE: lifecycle markers such as SIMULATION_READY never trigger visual media by themselves.",
             "",
             "SAFETY:",
             "No merge, deploy, restart, runner/runtime mutation, device/network/HA mutation, "
@@ -91,6 +98,21 @@ def _strict_json_object(raw: str, *, context: str) -> object:
         return json.loads(raw, object_pairs_hook=unique_pairs)
     except json.JSONDecodeError as exc:
         raise MasterRequestError(f"invalid {context}: {exc.msg}") from exc
+
+
+def _optional_bool(raw: Mapping, key: str) -> bool:
+    if key not in raw:
+        return False
+    value = raw.get(key)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes"}:
+            return True
+        if lowered in {"0", "false", "no", ""}:
+            return False
+    raise MasterRequestError(f"{key} must be boolean when present")
 
 
 def _row_value(row: Mapping, key: str, default=""):
@@ -216,6 +238,8 @@ def parse_master_request(text: str, source_comment_id: int | None = None) -> Mas
             workstream_issue=issue,
             files=tuple(str(x).strip() for x in raw.get("files", ()) if str(x).strip()),
             scope=str(raw.get("scope", "")).strip(),
+            ui_visual_scope=_optional_bool(raw, "ui_visual_scope"),
+            visual_media_required=_optional_bool(raw, "visual_media_required"),
         )
         if child_id in child_ids or child.worker_key in worker_keys:
             raise MasterRequestError("child ids and exact Projekt → Chat targets must be unique")
@@ -236,6 +260,8 @@ def parse_master_request(text: str, source_comment_id: int | None = None) -> Mas
                 "id": c.child_id, "worker": c.worker_key, "repository": c.repository,
                 "branch": c.branch, "done": c.done_criteria, "dependencies": c.dependencies,
                 "issue": c.workstream_issue, "files": c.files, "scope": c.scope,
+                "ui_visual_scope": c.ui_visual_scope,
+                "visual_media_required": c.visual_media_required,
             } for c in children
         ],
     }

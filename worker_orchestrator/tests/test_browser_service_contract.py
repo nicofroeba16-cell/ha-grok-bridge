@@ -1,5 +1,8 @@
 from pathlib import Path
+import os
 import re
+import subprocess
+import tempfile
 import unittest
 
 
@@ -21,6 +24,86 @@ class BrowserServiceContractTests(unittest.TestCase):
         self.assertNotRegex(launcher, r"\b(?:pkill|killall)\b")
         self.assertNotIn("NoNewPrivileges=true", unit)
         self.assertNotIn("PrivateTmp=true", unit)
+
+
+    def test_chrome_launcher_has_bounded_display_readiness_gate(self):
+        launcher = self.text("scripts/run_browser_wake_chrome.sh")
+        self.assertIn("BROWSER_DISPLAY_READY_TIMEOUT_SECONDS", launcher)
+        self.assertIn("BLOCKED_DISPLAY_NOT_READY", launcher)
+        self.assertIn("DISPLAY_READY", launcher)
+        self.assertIn("xset -display", launcher)
+        self.assertLess(launcher.index("while ! display_ready"), launcher.index('exec "$chrome_bin"'))
+
+    def test_display_readiness_simulation_waits_then_succeeds_without_browser(self):
+        launcher = ROOT / "scripts" / "run_browser_wake_chrome.sh"
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            fakebin = root / "bin"
+            fakebin.mkdir()
+            counter = root / "counter"
+            (fakebin / "ss").write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+            (fakebin / "xset").write_text(
+                "#!/bin/sh\n"
+                f"n=$(cat {counter!s} 2>/dev/null || echo 0)\n"
+                f"n=$((n+1)); echo $n > {counter!s}\n"
+                "[ $n -ge 3 ]\n",
+                encoding="utf-8",
+            )
+            (fakebin / "xdpyinfo").write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+            for file in fakebin.iterdir():
+                file.chmod(0o755)
+            env = os.environ.copy()
+            env.update({
+                "PATH": f"{fakebin}:/usr/bin:/bin",
+                "CHATGPT_PROFILE_DIR": str(root / "profile"),
+                "CHATGPT_CHROME_BIN": "/bin/true",
+                "CHATGPT_BROWSER_URL": "http://127.0.0.1:9224",
+                "XDG_RUNTIME_DIR": str(root / "runtime"),
+                "DISPLAY": ":99",
+                "BROWSER_DISPLAY_READY_TIMEOUT_SECONDS": "5",
+                "BROWSER_DISPLAY_READY_POLL_SECONDS": "0.05",
+                "BROWSER_WAKE_CHROME_READINESS_ONLY": "1",
+            })
+            (root / "runtime").mkdir()
+            proc = subprocess.run(
+                ["bash", str(launcher)], capture_output=True, text=True, env=env, timeout=10
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("DISPLAY_READY readiness_only=1", proc.stdout)
+            self.assertGreaterEqual(int(counter.read_text().strip()), 3)
+
+    def test_display_readiness_simulation_times_out_fail_closed(self):
+        launcher = ROOT / "scripts" / "run_browser_wake_chrome.sh"
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            fakebin = root / "bin"
+            fakebin.mkdir()
+            for name, body in {
+                "ss": "#!/bin/sh\nexit 1\n",
+                "xset": "#!/bin/sh\nexit 1\n",
+                "xdpyinfo": "#!/bin/sh\nexit 1\n",
+            }.items():
+                path = fakebin / name
+                path.write_text(body, encoding="utf-8")
+                path.chmod(0o755)
+            env = os.environ.copy()
+            env.update({
+                "PATH": f"{fakebin}:/usr/bin:/bin",
+                "CHATGPT_PROFILE_DIR": str(root / "profile"),
+                "CHATGPT_CHROME_BIN": "/bin/true",
+                "CHATGPT_BROWSER_URL": "http://127.0.0.1:9224",
+                "XDG_RUNTIME_DIR": str(root / "runtime"),
+                "DISPLAY": ":99",
+                "BROWSER_DISPLAY_READY_TIMEOUT_SECONDS": "1",
+                "BROWSER_DISPLAY_READY_POLL_SECONDS": "0.05",
+                "BROWSER_WAKE_CHROME_READINESS_ONLY": "1",
+            })
+            (root / "runtime").mkdir()
+            proc = subprocess.run(
+                ["bash", str(launcher)], capture_output=True, text=True, env=env, timeout=5
+            )
+            self.assertEqual(proc.returncode, 75)
+            self.assertIn("BLOCKED_DISPLAY_NOT_READY", proc.stderr)
 
     def test_dispatcher_depends_on_chrome_and_health(self):
         unit = self.text("systemd/browser-wake.service")

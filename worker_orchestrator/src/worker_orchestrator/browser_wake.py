@@ -186,7 +186,9 @@ class WakeLedger:
                 CREATE TABLE IF NOT EXISTS browser_wake_delivery (
                     message_id TEXT PRIMARY KEY, route_key TEXT NOT NULL,
                     status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
-                    last_error TEXT NOT NULL DEFAULT '', updated_at REAL NOT NULL
+                    last_error TEXT NOT NULL DEFAULT '',
+                    commit_marker TEXT NOT NULL DEFAULT '',
+                    updated_at REAL NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS browser_wake_seen_status (
                     fingerprint TEXT PRIMARY KEY, event_id INTEGER NOT NULL
@@ -216,6 +218,11 @@ class WakeLedger:
                     created_at REAL NOT NULL
                 );
             """)
+            columns = {row[1] for row in self.connection.execute("PRAGMA table_info(browser_wake_delivery)")}
+            if "commit_marker" not in columns:
+                self.connection.execute(
+                    "ALTER TABLE browser_wake_delivery ADD COLUMN commit_marker TEXT NOT NULL DEFAULT ''"
+                )
 
     def get_int(self, key: str, default: int = 0) -> int:
         row = self.connection.execute("SELECT value FROM browser_wake_meta WHERE key=?", (key,)).fetchone()
@@ -244,7 +251,8 @@ class WakeLedger:
 
     def delivery(self, message_id: str):
         return self.connection.execute(
-            "SELECT status,attempts,last_error FROM browser_wake_delivery WHERE message_id=?", (message_id,)
+            "SELECT status,attempts,last_error,commit_marker,updated_at FROM browser_wake_delivery WHERE message_id=?",
+            (message_id,),
         ).fetchone()
 
     def evaluate_delivery(self, message_id: str) -> dict[str, object]:
@@ -369,7 +377,10 @@ class WakeLedger:
                 (time.time(), message_id),
             )
 
-    def claim(self, message_id: str, route_key: str, max_attempts: int = 3) -> bool:
+    def claim(
+        self, message_id: str, route_key: str, max_attempts: int = 3,
+        *, commit_marker: str = "",
+    ) -> bool:
         row = self.delivery(message_id)
         if row and row[0] in {"DELIVERED", "IN_FLIGHT", "UNCERTAIN", "BLOCKED"}:
             return False
@@ -383,11 +394,12 @@ class WakeLedger:
             return False
         with self.connection:
             self.connection.execute(
-                """INSERT INTO browser_wake_delivery(message_id,route_key,status,attempts,last_error,updated_at)
-                   VALUES(?,?,'IN_FLIGHT',1,'',?) ON CONFLICT(message_id) DO UPDATE SET
+                """INSERT INTO browser_wake_delivery(
+                       message_id,route_key,status,attempts,last_error,commit_marker,updated_at
+                   ) VALUES(?,?,'IN_FLIGHT',1,'',?,?) ON CONFLICT(message_id) DO UPDATE SET
                    route_key=excluded.route_key,status='IN_FLIGHT',attempts=browser_wake_delivery.attempts+1,
-                   last_error='',updated_at=excluded.updated_at""",
-                (message_id, route_key, time.time()),
+                   last_error='',commit_marker=excluded.commit_marker,updated_at=excluded.updated_at""",
+                (message_id, route_key, commit_marker, time.time()),
             )
         return True
 
@@ -398,14 +410,45 @@ class WakeLedger:
                 (status, error[:240], time.time(), message_id),
             )
 
+    @staticmethod
+    def _commit_marker_verified(marker: str, message_id: str) -> bool:
+        if not marker:
+            return False
+        try:
+            value = json.loads(Path(marker).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return False
+        return (
+            isinstance(value, Mapping)
+            and value.get("message_id") == message_id
+            and value.get("state") == "SEND_COMMITTED"
+        )
+
     def recover_interrupted(self) -> None:
-        # At-most-once safety: a crashed process may already have clicked Send.
-        # Never retry such a wake automatically.
+        # New senders persist a local commit marker immediately before the one
+        # Send click. That lets restart recovery distinguish a safely retryable
+        # pre-send crash from a delivery-uncertain post-commit crash. Legacy
+        # rows without marker support remain UNCERTAIN (fail closed).
+        rows = self.connection.execute(
+            "SELECT message_id,commit_marker FROM browser_wake_delivery WHERE status='IN_FLIGHT'"
+        ).fetchall()
         with self.connection:
-            self.connection.execute(
-                "UPDATE browser_wake_delivery SET status='UNCERTAIN',last_error='INTERRUPTED_AFTER_CLAIM',updated_at=? WHERE status='IN_FLIGHT'",
-                (time.time(),),
-            )
+            for message_id, marker in rows:
+                marker = str(marker or "")
+                if marker and not self._commit_marker_verified(marker, str(message_id)):
+                    status = "FAILED_PRE_SEND"
+                    reason = "INTERRUPTED_BEFORE_SEND_COMMIT"
+                else:
+                    status = "UNCERTAIN"
+                    reason = (
+                        "INTERRUPTED_AFTER_SEND_COMMIT" if marker
+                        else "INTERRUPTED_AFTER_CLAIM_LEGACY_NO_COMMIT_EVIDENCE"
+                    )
+                self.connection.execute(
+                    """UPDATE browser_wake_delivery
+                       SET status=?,last_error=?,updated_at=? WHERE message_id=?""",
+                    (status, reason, time.time(), message_id),
+                )
 
     def queue_worker(self, message_id: str, route_key: str, destination: str, payload: str) -> None:
         row = self.delivery(message_id)
@@ -453,23 +496,45 @@ class WakeLedger:
 class CommandBrowserSender:
     """Input-only sender. The helper returns delivery metadata, never ChatGPT output."""
 
-    def __init__(self, command: str, *, timeout: int = 330):
+    def __init__(self, command: str, *, timeout: int = 330, marker_dir: str | Path | None = None):
         parts = shlex.split(command)
         if not parts:
             raise BrowserWakeError("BROWSER_WAKE_COMMAND is required")
         self.command = parts
         self.timeout = max(5, timeout)
+        configured = marker_dir or os.environ.get("BROWSER_WAKE_SEND_MARKER_DIR")
+        self.marker_dir = Path(configured) if configured else (
+            Path.home() / ".local" / "state" / "worker-orchestrator" / "browser-wake-send-markers"
+        )
+
+    def commit_marker_path(self, message_id: str) -> str:
+        digest = sha256(message_id.encode()).hexdigest()
+        return str(self.marker_dir / f"{digest}.json")
+
+    def marker_committed(self, message_id: str) -> bool:
+        return WakeLedger._commit_marker_verified(self.commit_marker_path(message_id), message_id)
+
+    def cleanup_marker(self, message_id: str) -> None:
+        try:
+            Path(self.commit_marker_path(message_id)).unlink()
+        except FileNotFoundError:
+            pass
 
     def __call__(self, message_id: str, destination: str, payload: str) -> DeliveryReceipt:
+        self.marker_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self.cleanup_marker(message_id)
         request = json.dumps({"message_id": message_id, "destination": destination, "payload": payload}, ensure_ascii=False)
+        env = os.environ.copy()
+        env["BROWSER_WAKE_SEND_MARKER_DIR"] = str(self.marker_dir)
         try:
             proc = subprocess.run(
                 self.command, input=request + "\n", text=True, capture_output=True,
-                timeout=self.timeout, check=False,
+                timeout=self.timeout, check=False, env=env,
             )
         except subprocess.TimeoutExpired as exc:
-            # The child may already have clicked Send; an outer timeout is never retry-safe.
-            raise BrowserWakeUncertainError(str(exc)) from exc
+            if self.marker_committed(message_id):
+                raise BrowserWakeUncertainError(str(exc)) from exc
+            raise BrowserWakePreSendError(str(exc)) from exc
         except OSError as exc:
             raise BrowserWakePreSendError(str(exc)) from exc
         lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
@@ -497,6 +562,8 @@ class CommandBrowserSender:
                 transport=str(result.get("transport") or ""),
             )
         reason = str(result.get("error") or proc.stderr.strip() or "browser sender failed")[:240]
+        if self.marker_committed(message_id):
+            raise BrowserWakeUncertainError(reason)
         if result.get("safe_to_retry") is True:
             raise BrowserWakePreSendError(reason)
         raise BrowserWakeUncertainError(reason)
@@ -708,20 +775,32 @@ class WakeCoordinator:
         row = self.ledger.delivery(message_id)
         if row and row[0] == "DELIVERED":
             return False
-        if not self.ledger.claim(message_id, route_key):
+        marker = ""
+        marker_path = getattr(self.sender, "commit_marker_path", None)
+        if callable(marker_path):
+            marker = str(marker_path(message_id))
+        if not self.ledger.claim(message_id, route_key, commit_marker=marker):
             return False
         try:
             receipt = self.sender(message_id, destination, payload)
         except BrowserWakePreSendError as exc:
             self.ledger.finish(message_id, "FAILED_PRE_SEND", str(exc))
+            cleanup = getattr(self.sender, "cleanup_marker", None)
+            if callable(cleanup): cleanup(message_id)
             return False
         except BrowserWakeUncertainError as exc:
             self.ledger.finish(message_id, "UNCERTAIN", str(exc))
+            cleanup = getattr(self.sender, "cleanup_marker", None)
+            if callable(cleanup): cleanup(message_id)
             return False
         except Exception as exc:
             self.ledger.finish(message_id, "UNCERTAIN", f"{type(exc).__name__}: {exc}")
+            cleanup = getattr(self.sender, "cleanup_marker", None)
+            if callable(cleanup): cleanup(message_id)
             return False
         self.ledger.finish(message_id, "DELIVERED")
+        cleanup = getattr(self.sender, "cleanup_marker", None)
+        if callable(cleanup): cleanup(message_id)
         if isinstance(receipt, DeliveryReceipt) and receipt.verified and route_key != MASTER_ROUTE_KEY:
             fields = _fields(payload)
             project = fields.get("PROJECT", "")

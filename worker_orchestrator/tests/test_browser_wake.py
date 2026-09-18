@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import sqlite3
 import subprocess
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from worker_orchestrator.browser_wake import (
@@ -243,12 +245,29 @@ class BrowserWakeTests(unittest.TestCase):
         self.assertEqual(len(calls), 3)
 
 
-    def test_command_sender_outer_timeout_is_uncertain_not_retryable(self):
-        sender = CommandBrowserSender("echo ok")
-        self.assertGreaterEqual(sender.timeout, 300)
-        with patch("worker_orchestrator.browser_wake.subprocess.run", side_effect=subprocess.TimeoutExpired(["echo"], 1)):
-            with self.assertRaises(BrowserWakeUncertainError):
-                sender("m-timeout", WORKER_URL, "wake")
+    def test_command_sender_timeout_uses_send_commit_evidence(self):
+        with tempfile.TemporaryDirectory() as td:
+            sender = CommandBrowserSender("echo ok", marker_dir=td)
+            self.assertGreaterEqual(sender.timeout, 300)
+            with patch(
+                "worker_orchestrator.browser_wake.subprocess.run",
+                side_effect=subprocess.TimeoutExpired(["echo"], 1),
+            ):
+                with self.assertRaises(BrowserWakePreSendError):
+                    sender("m-pre-timeout", WORKER_URL, "wake")
+
+            def committed_timeout(*args, **kwargs):
+                marker = Path(sender.commit_marker_path("m-post-timeout"))
+                marker.parent.mkdir(parents=True, exist_ok=True)
+                marker.write_text(
+                    json.dumps({"message_id": "m-post-timeout", "state": "SEND_COMMITTED"}),
+                    encoding="utf-8",
+                )
+                raise subprocess.TimeoutExpired(["echo"], 1)
+
+            with patch("worker_orchestrator.browser_wake.subprocess.run", side_effect=committed_timeout):
+                with self.assertRaises(BrowserWakeUncertainError):
+                    sender("m-post-timeout", WORKER_URL, "wake")
 
     def test_uncertain_delivery_is_never_retried(self):
         calls = []
@@ -439,6 +458,32 @@ class BrowserWakeTests(unittest.TestCase):
         row = coord.ledger.delivery("m1")
         self.assertEqual(row[0], "UNCERTAIN")
         self.assertFalse(coord.ledger.claim("m1", WORKER_KEY))
+
+    def test_interrupted_marker_aware_pre_send_is_retryable(self):
+        with tempfile.TemporaryDirectory() as td:
+            marker = str(Path(td) / "m-pre.json")
+            coord = self.coordinator(RecordingSender())
+            self.assertTrue(coord.ledger.claim("m-pre", WORKER_KEY, commit_marker=marker))
+            coord.ledger.recover_interrupted()
+            row = coord.ledger.delivery("m-pre")
+            self.assertEqual(row[0], "FAILED_PRE_SEND")
+            self.assertEqual(row[2], "INTERRUPTED_BEFORE_SEND_COMMIT")
+            self.assertTrue(coord.ledger.claim("m-pre", WORKER_KEY, commit_marker=marker))
+
+    def test_interrupted_marker_aware_post_commit_is_uncertain(self):
+        with tempfile.TemporaryDirectory() as td:
+            marker = Path(td) / "m-post.json"
+            marker.write_text(
+                json.dumps({"message_id": "m-post", "state": "SEND_COMMITTED"}),
+                encoding="utf-8",
+            )
+            coord = self.coordinator(RecordingSender())
+            self.assertTrue(coord.ledger.claim("m-post", WORKER_KEY, commit_marker=str(marker)))
+            coord.ledger.recover_interrupted()
+            row = coord.ledger.delivery("m-post")
+            self.assertEqual(row[0], "UNCERTAIN")
+            self.assertEqual(row[2], "INTERRUPTED_AFTER_SEND_COMMIT")
+            self.assertFalse(coord.ledger.claim("m-post", WORKER_KEY, commit_marker=str(marker)))
 
 
 if __name__ == "__main__":

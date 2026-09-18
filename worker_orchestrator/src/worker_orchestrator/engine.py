@@ -5,6 +5,10 @@ from datetime import datetime, timezone
 from hashlib import sha256
 from typing import Callable, Mapping
 
+from .doc_sync import (
+    DOC_SYNC_BLOCKED, DOC_SYNC_MASTER_PENDING, DOC_SYNC_PENDING,
+    DOC_SYNC_REQUIRED, DOC_SYNC_VERIFIED, DocumentationSyncOutbox,
+)
 from .goals import parse_goals
 from .models import DEFAULT_ALLOWED_REPOSITORIES, GATED_ACTIONS, Goal, LifecycleState, WorkerResult
 from .security import sanitize
@@ -83,6 +87,7 @@ class Orchestrator:
         stalled_threshold: int = 3,
         ci_verifier: Callable[[str, str], str] | None = None,
         allowed_repositories: set[str] | None = None,
+        doc_sync: DocumentationSyncOutbox | None = None,
     ):
         self.registry = registry
         self.worker = worker
@@ -91,6 +96,7 @@ class Orchestrator:
         self.stalled_threshold = max(2, stalled_threshold)
         self.ci_verifier = ci_verifier
         self.allowed_repositories = set(DEFAULT_ALLOWED_REPOSITORIES if allowed_repositories is None else allowed_repositories)
+        self.doc_sync = doc_sync
         self.documentation_reconciled_keys: set[str] = set()
 
     def ingest_items(self, items: list[dict]) -> list[Goal]:
@@ -174,6 +180,8 @@ class Orchestrator:
                 files=tuple(json.loads(row["files"])),
                 scope=row["scope"],
                 approved_actions=tuple(json.loads(row["approved_actions"])),
+                ui_visual_scope=bool(row["ui_visual_scope"]),
+                visual_media_required=bool(row["visual_media_required"]),
                 source_comment_id=row["source_comment_id"],
             )
             self._report(
@@ -341,6 +349,8 @@ class Orchestrator:
                 workstream_issue=row["workstream_issue"], explicit_version=row["goal_version"],
                 files=tuple(json.loads(row["files"])), scope=row["scope"],
                 approved_actions=tuple(json.loads(row["approved_actions"])),
+                ui_visual_scope=bool(row["ui_visual_scope"]),
+                visual_media_required=bool(row["visual_media_required"]),
                 source_comment_id=row["source_comment_id"],
             )
             result = WorkerResult(
@@ -461,10 +471,13 @@ class Orchestrator:
         all_done = bool(required) and required.issubset(verified)
         ci_green = result.ci.upper() in {"GREEN", "SUCCESS", "PASS", "PASSED"}
         if all_done and not result.blockers and not result.error and ci_green:
-            state = LifecycleState.DONE
+            desired_state = LifecycleState.DONE
+            # Persist all terminal evidence locally first, but do not expose DONE
+            # until the two-phase documentation commit is durable.
+            provisional = LifecycleState.READY if self.doc_sync is not None else desired_state
             self.registry.set_state(
                 goal.key,
-                state,
+                provisional,
                 last_head=result.head,
                 ci_status=result.ci,
                 blockers=[],
@@ -476,18 +489,30 @@ class Orchestrator:
                 unchanged_runs=0,
                 session_state=result.session_state,
             )
+            stage = self._report(
+                "WORKER_DONE",
+                goal,
+                self._status_payload(goal, desired_state, result, [], []),
+            )
+            if self.doc_sync is not None and stage != DOC_SYNC_VERIFIED:
+                current = self.registry.get(goal.key)
+                blockers = list(json.loads(current["blockers"] or "[]"))
+                blockers = list(dict.fromkeys([*blockers, "DOC_SYNC_BLOCKED"]))
+                self.registry.set_state(
+                    goal.key,
+                    LifecycleState.BLOCKED,
+                    blockers=blockers,
+                    last_progress="Terminal result is complete but canonical documentation is not yet verified.",
+                )
+                return LifecycleState.BLOCKED
+            self.registry.set_state(goal.key, desired_state, blockers=[], user_gate=[])
             self.registry.record_event(
                 goal.key,
                 goal.version,
                 "WORKER_DONE",
                 {"head": result.head, "evidence": result.evidence},
             )
-            self._report(
-                "WORKER_DONE",
-                goal,
-                self._status_payload(goal, state, result, [], []),
-            )
-            return LifecycleState(self.registry.get(goal.key)["state"])
+            return desired_state
 
         blockers = list(result.blockers)
         if result.error:
@@ -514,11 +539,18 @@ class Orchestrator:
         self.registry.record_event(
             goal.key, goal.version, "WORKER_STATUS", {"state": state, "blockers": blockers}
         )
-        self._report(
+        stage = self._report(
             "WORKER_STATUS",
             goal,
             self._status_payload(goal, state, result, blockers, []),
         )
+        if self.doc_sync is not None and state == LifecycleState.READY and stage != DOC_SYNC_VERIFIED:
+            blockers = list(dict.fromkeys([*blockers, "DOC_SYNC_BLOCKED"]))
+            self.registry.set_state(
+                goal.key, LifecycleState.BLOCKED, blockers=blockers,
+                last_progress="READY evidence exists but canonical documentation is not verified.",
+            )
+            return LifecycleState.BLOCKED
         return LifecycleState(self.registry.get(goal.key)["state"])
 
     def _status_payload(
@@ -544,28 +576,67 @@ class Orchestrator:
             "supersedes": row["last_report_fingerprint"] if row else "",
         }
 
-    def _report(self, kind: str, goal: Goal, payload: dict) -> None:
-        if not self.reporter:
-            return
+    def _report(self, kind: str, goal: Goal, payload: dict) -> str:
         force = bool(payload.get("_force_report", False))
         safe_payload = sanitize(payload)
         safe_payload.pop("_force_report", None)
+        destinations = safe_payload.pop("_destinations", None)
         fingerprint = report_fingerprint(kind, safe_payload)
         safe_payload["fingerprint"] = fingerprint
         row = self.registry.get(goal.key)
+
+        if self.doc_sync is not None:
+            target_issue = int(goal.workstream_issue or self.doc_sync.master_issue)
+            workstream_repo = goal.repository if goal.workstream_issue else self.doc_sync.master_repo
+            body = format_report(kind, goal, safe_payload)
+            sync_key = self.doc_sync.queue(
+                worker_key=goal.key,
+                goal_version=goal.version,
+                desired_state=str(payload.get("state", LifecycleState.RUNNING)),
+                kind=kind,
+                fingerprint=fingerprint,
+                body=body,
+                workstream_repo=workstream_repo,
+                workstream_issue=target_issue,
+            )
+            self.registry.set_doc_sync(goal.key, DOC_SYNC_PENDING, sync_key=sync_key)
+            stage = self.doc_sync.process(sync_key)
+            current = self.doc_sync.get(sync_key)
+            error = str(current["last_error"] or "") if current is not None else ""
+            self.registry.set_doc_sync(goal.key, stage, sync_key=sync_key, error=error)
+            if stage == DOC_SYNC_VERIFIED:
+                self.registry.set_state(
+                    goal.key,
+                    LifecycleState(row["state"]) if row is not None else LifecycleState.ASSIGNED,
+                    last_report_fingerprint=fingerprint,
+                )
+                self.registry.record_event(
+                    goal.key, goal.version, "DOC_SYNC_VERIFIED",
+                    {"sync_key": sync_key, "fingerprint": fingerprint},
+                )
+            elif stage == DOC_SYNC_BLOCKED:
+                self.registry.record_event(
+                    goal.key, goal.version, "DOC_SYNC_BLOCKED",
+                    {"sync_key": sync_key, "reason": error},
+                )
+            return stage
+
+        if not self.reporter:
+            return DOC_SYNC_VERIFIED
         if row is not None and row["last_report_fingerprint"] == fingerprint and not force:
-            return
+            return DOC_SYNC_VERIFIED
+        if destinations is not None:
+            safe_payload["_destinations"] = destinations
         try:
             self.reporter(kind, goal, safe_payload)
         except ReportFormatError as exc:
             self._record_report_failure(goal, "REPORT_FORMAT_FAILED", exc)
-            return
+            return DOC_SYNC_BLOCKED
         except DocumentationDriftError as exc:
             self._record_report_failure(goal, "DOCUMENTATION_DRIFT", exc)
             current = self.registry.get(goal.key)
-            if current is not None:
-                blockers = json.loads(current["blockers"] or "[]")
-                blockers = list(dict.fromkeys([*blockers, "DOCUMENTATION_DRIFT"]))
+            blockers = json.loads(current["blockers"] or "[]") if current is not None else []
+            blockers = list(dict.fromkeys([*blockers, "DOCUMENTATION_DRIFT"]))
             self.registry.set_state(
                 goal.key, LifecycleState.BLOCKED, blockers=blockers,
                 last_progress="Canonical documentation destinations diverged; retry reconciliation.",
@@ -576,13 +647,10 @@ class Orchestrator:
                     }
                 },
             )
-            return
+            return DOC_SYNC_BLOCKED
         except Exception as exc:
-            # Non-destination reporter errors remain retryable without changing
-            # the worker state; the dual-destination reporter raises the typed
-            # error above for actual partial writes.
             self._record_report_failure(goal, "REPORT_WRITE_FAILED", exc)
-            return
+            return DOC_SYNC_BLOCKED
         if row is not None:
             try:
                 pending = json.loads(row["session_state"] or "{}").get("documentation_pending")
@@ -594,12 +662,85 @@ class Orchestrator:
                 )
             except Exception as exc:
                 self._record_report_failure(goal, "REPORT_WRITE_FAILED", exc)
+                return DOC_SYNC_BLOCKED
+        return DOC_SYNC_VERIFIED
 
     def reconcile_documentation(
         self, master_items: list[dict], destinations: dict | None = None,
         master_destination: tuple[str, int] | None = None,
     ) -> int:
         """Repair missing/stale canonical statuses without executing workers."""
+        if self.doc_sync is not None:
+            self.documentation_reconciled_keys.clear()
+            repaired = 0
+            # Restart-safe continuation begins at the last durable phase.
+            self.doc_sync.process_pending()
+            for row in self.registry.list_all():
+                latest = self.doc_sync.latest(row["worker_key"], row["goal_version"])
+                if latest is not None:
+                    stage = self.doc_sync.state(latest)
+                    self.registry.set_doc_sync(
+                        row["worker_key"], stage, sync_key=latest["sync_key"],
+                        error=str(latest["last_error"] or ""),
+                    )
+                    if stage == DOC_SYNC_VERIFIED:
+                        blockers = list(json.loads(row["blockers"] or "[]"))
+                        if row["state"] == LifecycleState.BLOCKED and "DOC_SYNC_BLOCKED" in blockers:
+                            desired = str(latest["desired_state"] or "")
+                            if desired in {LifecycleState.DONE, LifecycleState.READY}:
+                                blockers = [x for x in blockers if x != "DOC_SYNC_BLOCKED"]
+                                self.registry.set_state(
+                                    row["worker_key"], LifecycleState(desired), blockers=blockers,
+                                    last_report_fingerprint=latest["fingerprint"],
+                                    last_progress="Canonical documentation verified; terminal state finalized.",
+                                )
+                                self.registry.record_event(
+                                    row["worker_key"], row["goal_version"],
+                                    "DOC_SYNC_TERMINAL_FINALIZED",
+                                    {"sync_key": latest["sync_key"], "state": desired},
+                                )
+                                repaired += 1
+                                continue
+                        if row["last_report_fingerprint"] == latest["fingerprint"]:
+                            continue
+                    else:
+                        self.documentation_reconciled_keys.add(row["worker_key"])
+                        repaired += 1
+                        continue
+
+                goal = Goal(
+                    project=row["project"], chat=row["chat"], repository=row["repository"],
+                    branch=row["branch"], prompt=row["prompt"],
+                    done_criteria=tuple(json.loads(row["done_criteria"])),
+                    workstream_issue=row["workstream_issue"], explicit_version=row["goal_version"],
+                    files=tuple(json.loads(row["files"])), scope=row["scope"],
+                    approved_actions=tuple(json.loads(row["approved_actions"])),
+                    ui_visual_scope=bool(row["ui_visual_scope"]),
+                    visual_media_required=bool(row["visual_media_required"]),
+                    source_comment_id=row["source_comment_id"],
+                )
+                result = WorkerResult(
+                    head=row["last_head"], ci=row["ci_status"],
+                    verified_criteria=tuple(json.loads(row["verified_criteria"] or "[]")),
+                    blockers=tuple(json.loads(row["blockers"] or "[]")),
+                    evidence=json.loads(row["completion_evidence"] or "{}"),
+                    progress=row["last_progress"],
+                )
+                state = LifecycleState(row["state"])
+                kind = "WORKER_DONE" if state == LifecycleState.DONE else "WORKER_STATUS"
+                payload = self._status_payload(
+                    goal, state, result, list(result.blockers),
+                    list(json.loads(row["user_gate"] or "[]")),
+                )
+                desired_fp = report_fingerprint(kind, payload)
+                if row["last_report_fingerprint"] != desired_fp:
+                    self.registry.set_doc_sync(row["worker_key"], DOC_SYNC_REQUIRED)
+                    self.documentation_reconciled_keys.add(row["worker_key"])
+                    stage = self._report(kind, goal, payload)
+                    repaired += 1
+                    if stage != DOC_SYNC_VERIFIED:
+                        continue
+            return repaired
         master_statuses = parse_canonical_statuses(master_items)
         destinations = destinations or {}
         self.documentation_reconciled_keys.clear()
@@ -632,6 +773,8 @@ class Orchestrator:
                 workstream_issue=row["workstream_issue"], explicit_version=row["goal_version"],
                 files=tuple(json.loads(row["files"])), scope=row["scope"],
                 approved_actions=tuple(json.loads(row["approved_actions"])),
+                ui_visual_scope=bool(row["ui_visual_scope"]),
+                visual_media_required=bool(row["visual_media_required"]),
                 source_comment_id=row["source_comment_id"],
             )
             result = WorkerResult(

@@ -3,6 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
+import { createHash } from 'node:crypto';
 import puppeteer from 'puppeteer';
 
 function fail(error, safeToRetry, code = 2) {
@@ -96,6 +97,17 @@ async function composerText(page, composer) {
   return page.evaluate((el) => {
     if (!el) return '';
     if ('value' in el && typeof el.value === 'string') return el.value;
+    if (el.isContentEditable && el.children?.length) {
+      // ProseMirror renders newline-delimited input as block paragraphs.
+      // innerText inserts an extra visual blank line between <p> nodes, while
+      // textContent removes delimiters entirely. Reconstruct one logical line
+      // per direct block so atomic readback matches the original payload.
+      const blocks = [...el.children];
+      const blockTags = new Set(['P', 'DIV']);
+      if (blocks.every((child) => blockTags.has(child.tagName))) {
+        return blocks.map((child) => child.innerText ?? child.textContent ?? '').join('\n');
+      }
+    }
     return el.innerText ?? el.textContent ?? '';
   }, composer);
 }
@@ -148,7 +160,9 @@ async function countWakeTurns(page, fullPayload, firstLine) {
     let exactFull = 0;
     let exactPrefixOnly = 0;
     for (const turn of document.querySelectorAll('[data-message-author-role="user"]')) {
-      const text = normalize(turn.innerText || turn.textContent || '');
+      const content = turn.querySelector('[data-testid="collapsible-user-message-content"]')
+        || turn.querySelector('.whitespace-pre-wrap') || turn;
+      const text = normalize(content.innerText || content.textContent || '');
       if (text === full) exactFull += 1;
       if (text === prefix && text !== full) exactPrefixOnly += 1;
     }
@@ -237,7 +251,9 @@ async function waitForPersistedUserTurn(
         let exactFull = 0;
         let exactPrefixOnly = 0;
         for (const turn of document.querySelectorAll('[data-message-author-role="user"]')) {
-          const text = normalize(turn.innerText || turn.textContent || '');
+          const content = turn.querySelector('[data-testid="collapsible-user-message-content"]')
+        || turn.querySelector('.whitespace-pre-wrap') || turn;
+      const text = normalize(content.innerText || content.textContent || '');
           if (text === full) exactFull += 1;
           if (text === prefix && text !== full) exactPrefixOnly += 1;
         }
@@ -451,6 +467,144 @@ async function resolveByTitle(page, title) {
   return resolved;
 }
 
+
+function exactConversationPath(raw) {
+  return new URL(validateConcreteUrl(raw)).pathname.replace(/\/$/, '');
+}
+
+async function visibleComposer(page) {
+  const selector = [
+    '[data-testid="prompt-textarea"]',
+    '#prompt-textarea',
+    'textarea[data-testid="prompt-textarea"]',
+  ].join(',');
+  try {
+    const composer = await page.$(selector);
+    if (!composer) return null;
+    const visible = await composer.evaluate((el) => {
+      const style = getComputedStyle(el);
+      const rect = el.getBoundingClientRect();
+      return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+    });
+    return visible ? composer : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+async function waitForExactHydratedConversation(page, expectedPath, timeoutMs = 12000) {
+  const deadline = Date.now() + timeoutMs;
+  let last = { state: 'SHELL_ONLY_NO_COMPOSER', path: '' };
+  while (Date.now() < deadline) {
+    try {
+      const current = new URL(page.url());
+      const currentPath = current.pathname.replace(/\/$/, '');
+      if (current.hostname !== 'chatgpt.com') {
+        return { ready: false, state: 'AUTH_OR_EXTERNAL_REDIRECT', path: currentPath };
+      }
+      if (currentPath !== expectedPath) {
+        if (currentPath.includes('/c/')) {
+          return { ready: false, state: 'ROUTE_MISMATCH', path: currentPath };
+        }
+        last = { state: 'CONVERSATION_NOT_HYDRATED', path: currentPath };
+      } else {
+        const composer = await visibleComposer(page);
+        if (composer) return { ready: true, state: 'HYDRATED', path: currentPath, composer };
+        last = { state: 'SHELL_ONLY_NO_COMPOSER', path: currentPath };
+      }
+    } catch (_) {
+      last = { state: 'CONVERSATION_PROBE_FAILED', path: '' };
+    }
+    await sleep(250);
+  }
+  return { ready: false, ...last };
+}
+
+async function existingExactHydratedPage(browser, destination) {
+  const expectedPath = exactConversationPath(destination);
+  for (const candidate of await browser.pages()) {
+    let current;
+    try { current = new URL(candidate.url()); } catch (_) { continue; }
+    if (current.hostname !== 'chatgpt.com' || current.pathname.replace(/\/$/, '') !== expectedPath) continue;
+    const state = await waitForExactHydratedConversation(candidate, expectedPath, 2500);
+    if (state.ready) return { page: candidate, composer: state.composer, source: 'existing_exact_hydrated' };
+  }
+  return null;
+}
+
+async function openHydratedDestination(browser, destination) {
+  const expectedPath = exactConversationPath(destination);
+  const attempts = Number(process.env.CHATGPT_HYDRATION_ATTEMPTS || 2);
+  const hydrationTimeout = Number(process.env.CHATGPT_HYDRATION_TIMEOUT_MS || 12000);
+  for (let attempt = 1; attempt <= Math.max(1, attempts); attempt += 1) {
+    const page = await browser.newPage();
+    try {
+      await page.goto(destination, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      let state = await waitForExactHydratedConversation(page, expectedPath, hydrationTimeout);
+      if (state.ready) return { page, composer: state.composer, source: `fresh_hydrated_${attempt}` };
+      if (state.state === 'SHELL_ONLY_NO_COMPOSER' && attempt === 1) {
+        try { await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 }); } catch (_) {}
+        state = await waitForExactHydratedConversation(page, expectedPath, hydrationTimeout);
+        if (state.ready) return { page, composer: state.composer, source: 'fresh_reload_hydrated' };
+      }
+      if (['AUTH_OR_EXTERNAL_REDIRECT', 'ROUTE_MISMATCH'].includes(state.state)) {
+        throw new Error(`${state.state}: expected ${expectedPath}, got ${state.path}`);
+      }
+    } finally {
+      // Successful returns skip this close. Failed recovery pages are disposable
+      // and never replace/navigate an existing hydrated conversation tab.
+    }
+    try { await page.close(); } catch (_) {}
+  }
+  throw new Error('SHELL_ONLY_NO_COMPOSER: exact conversation route never hydrated a composer');
+}
+
+function classifyWakeDraft(raw, payload, messageId) {
+  const text = canonicalComposerText(raw);
+  if (!text.trim()) return 'EMPTY';
+  const firstLine = String(payload).split(/\r?\n/, 1)[0];
+  const wakeIdLine = `WAKE_ID: ${messageId}`;
+  const lines = text.split('\n').map((line) => line.trim());
+  if (text.trimStart().startsWith(firstLine) && lines.includes(wakeIdLine)) return 'OWNED_STALE_WAKE_DRAFT';
+  return 'FOREIGN_DRAFT';
+}
+
+async function clearComposerAtomically(page, composer) {
+  await page.evaluate((el) => {
+    if (!el) throw new Error('composer missing while clearing owned stale wake draft');
+    const tag = (el.tagName || '').toLowerCase();
+    if (tag === 'textarea' || tag === 'input') {
+      const proto = tag === 'textarea' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+      if (!setter) throw new Error('native composer value setter unavailable');
+      setter.call(el, '');
+    } else if (el.isContentEditable) {
+      el.replaceChildren();
+    } else {
+      throw new Error('unsupported ChatGPT composer element');
+    }
+    el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward', data: null }));
+  }, composer);
+  if (canonicalComposerText(await composerText(page, composer)).trim()) {
+    throw new Error('owned stale wake draft could not be cleared exactly');
+  }
+}
+
+function sendCommitMarkerPath(messageId) {
+  const root = String(process.env.BROWSER_WAKE_SEND_MARKER_DIR || '').trim();
+  if (!root) throw new Error('BROWSER_WAKE_SEND_MARKER_DIR is required');
+  const digest = createHash('sha256').update(messageId).digest('hex');
+  return path.join(root, `${digest}.json`);
+}
+
+function writeSendCommitMarker(messageId) {
+  const file = sendCommitMarkerPath(messageId);
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  const tmp = `${file}.tmp-${process.pid}`;
+  fs.writeFileSync(tmp, JSON.stringify({ message_id: messageId, state: 'SEND_COMMITTED' }) + '\n', { mode: 0o600 });
+  fs.renameSync(tmp, file);
+}
+
 async function main() {
   let request;
   try {
@@ -468,6 +622,7 @@ async function main() {
   let browser;
   let ownsBrowser = false;
   let sendCommitted = false;
+  let safeToRetry = true;
   try {
     const browserUrlRaw = String(process.env.CHATGPT_BROWSER_URL || '').trim();
     if (browserUrlRaw) {
@@ -491,19 +646,28 @@ async function main() {
       ownsBrowser = true;
     }
 
-    const pages = await browser.pages();
-    const page = pages.find((candidate) => candidate.url().startsWith('https://chatgpt.com')) || pages[0] || await browser.newPage();
-    const destination = request.destination.kind === 'title'
-      ? await resolveByTitle(page, request.destination.title)
-      : request.destination.url;
+    let destination;
+    if (request.destination.kind === 'title') {
+      const resolver = await browser.newPage();
+      try {
+        destination = await resolveByTitle(resolver, request.destination.title);
+      } finally {
+        try { await resolver.close(); } catch (_) {}
+      }
+    } else {
+      destination = request.destination.url;
+    }
 
-    await page.goto(destination, { waitUntil: 'domcontentloaded', timeout: 30000 });
-    const loaded = new URL(page.url());
-    const expectedPath = new URL(destination).pathname.replace(/\/$/, '');
-    const loadedPath = loaded.pathname.replace(/\/$/, '');
-    if (loaded.hostname !== 'chatgpt.com') throw new Error('ChatGPT session redirected away from chatgpt.com');
-    if (!loaded.pathname.includes('/c/')) throw new Error('ChatGPT conversation did not load; login may be required');
-    if (loadedPath !== expectedPath) throw new Error('ChatGPT conversation route verification failed before send');
+    const expectedPath = exactConversationPath(destination);
+    let target = await existingExactHydratedPage(browser, destination);
+    if (!target) target = await openHydratedDestination(browser, destination);
+    const page = target.page;
+    let composer = target.composer;
+    const finalReadiness = await waitForExactHydratedConversation(page, expectedPath, 2500);
+    if (!finalReadiness.ready) {
+      throw new Error(`${finalReadiness.state}: target conversation not safely hydrated before idle gate`);
+    }
+    composer = finalReadiness.composer;
 
     // Never mutate the composer while the previous assistant task is active.
     // A busy timeout is pre-send and therefore safe for the persistent queue to retry.
@@ -512,22 +676,23 @@ async function main() {
       throw new Error('target conversation remained busy before wake insertion');
     }
 
-    const composerSelector = [
-      '[data-testid="prompt-textarea"]',
-      '#prompt-textarea',
-      'textarea[data-testid="prompt-textarea"]',
-    ].join(',');
-    await page.waitForSelector(composerSelector, { visible: true, timeout: 20000 });
-    const composer = await page.$(composerSelector);
-    if (!composer) throw new Error('ChatGPT composer not found');
+    if (!composer) throw new Error('SHELL_ONLY_NO_COMPOSER: ChatGPT composer not found');
 
     const composerBefore = canonicalComposerText(await composerText(page, composer));
-    if (composerBefore.trim()) {
-      throw new Error('ChatGPT composer contains an existing draft; refusing to overwrite');
+    const draftClass = classifyWakeDraft(composerBefore, request.payload, request.messageId);
+    if (draftClass === 'OWNED_STALE_WAKE_DRAFT') {
+      await clearComposerAtomically(page, composer);
+    } else if (draftClass === 'FOREIGN_DRAFT') {
+      safeToRetry = false;
+      throw new Error('FOREIGN_DRAFT: refusing to overwrite non-orchestrator composer content');
     }
 
     const wakeFirstLine = String(request.payload).split(/\r?\n/, 1)[0];
     const wakeTurnsBefore = await countWakeTurns(page, request.payload, wakeFirstLine);
+    if (wakeTurnsBefore.exactPrefixOnly > 0) {
+      safeToRetry = false;
+      throw new Error('NAKED_WAKE_PREFIX_PRESENT: refusing automatic send after prefix-only user turn');
+    }
 
     // Insert the entire payload through one DOM text operation. No per-character
     // KeyboardEvent path is allowed because embedded newlines must never submit.
@@ -564,9 +729,11 @@ async function main() {
       };
     });
 
-    // From this point onward a process interruption is delivery-uncertain.
-    // The Python ledger deliberately never retries uncertain sends automatically.
+    // Persist the commit boundary before the only Send click. A crash before
+    // this marker is retry-safe; a crash after it is delivery-uncertain.
+    writeSendCommitMarker(request.messageId);
     sendCommitted = true;
+    safeToRetry = false;
     await send.click();
 
     if (!await waitForExactlyOneWakeTurn(
@@ -613,11 +780,13 @@ async function main() {
       target_idle_verified_before_composer_mutation: true,
       atomic_payload_readback_verified: true,
       exactly_one_full_wake_turn_verified: true,
+      target_page_source: target.source,
+      existing_exact_tab_reused: target.source === 'existing_exact_hydrated',
       verification_source: 'persisted_user_turn_after_reload_same_conversation',
       output_scraped: false,
     }) + '\n');
   } catch (error) {
-    fail(error, !sendCommitted);
+    fail(error, safeToRetry && !sendCommitted);
   } finally {
     if (browser) {
       try {

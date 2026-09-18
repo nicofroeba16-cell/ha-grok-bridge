@@ -47,6 +47,8 @@ class Registry:
                     files TEXT NOT NULL,
                     scope TEXT NOT NULL,
                     approved_actions TEXT NOT NULL,
+                    ui_visual_scope INTEGER NOT NULL DEFAULT 0,
+                    visual_media_required INTEGER NOT NULL DEFAULT 0,
                     state TEXT NOT NULL,
                     last_head TEXT NOT NULL DEFAULT '',
                     ci_status TEXT NOT NULL DEFAULT 'UNKNOWN',
@@ -60,6 +62,9 @@ class Registry:
                     execution_count INTEGER NOT NULL DEFAULT 0,
                     recovery_count INTEGER NOT NULL DEFAULT 0,
                     last_report_fingerprint TEXT NOT NULL DEFAULT '',
+                    doc_sync_state TEXT NOT NULL DEFAULT 'DOC_SYNC_VERIFIED',
+                    doc_sync_key TEXT NOT NULL DEFAULT '',
+                    doc_sync_error TEXT NOT NULL DEFAULT '',
                     source_comment_id INTEGER,
                     session_state TEXT NOT NULL DEFAULT '{}',
                     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -85,6 +90,16 @@ class Registry:
                     acquired_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+            columns = {row[1] for row in c.execute('PRAGMA table_info(workers)')}
+            for name, ddl in (
+                ('ui_visual_scope', "INTEGER NOT NULL DEFAULT 0"),
+                ('visual_media_required', "INTEGER NOT NULL DEFAULT 0"),
+                ('doc_sync_state', "TEXT NOT NULL DEFAULT 'DOC_SYNC_VERIFIED'"),
+                ('doc_sync_key', "TEXT NOT NULL DEFAULT ''"),
+                ('doc_sync_error', "TEXT NOT NULL DEFAULT ''"),
+            ):
+                if name not in columns:
+                    c.execute(f'ALTER TABLE workers ADD COLUMN {name} {ddl}')
             c.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version', ?)", (str(SCHEMA_VERSION),))
 
     def recover_interrupted(self) -> list[str]:
@@ -125,8 +140,9 @@ class Registry:
                 INSERT INTO workers(
                     worker_key, project, chat, repository, branch, workstream_issue,
                     goal_hash, goal_version, prompt, done_criteria, files, scope,
-                    approved_actions, state, source_comment_id, last_progress
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    approved_actions, ui_visual_scope, visual_media_required,
+                    state, source_comment_id, last_progress
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(worker_key) DO UPDATE SET
                     project=excluded.project, chat=excluded.chat,
                     repository=excluded.repository, branch=excluded.branch,
@@ -135,17 +151,22 @@ class Registry:
                     prompt=excluded.prompt, done_criteria=excluded.done_criteria,
                     files=excluded.files, scope=excluded.scope,
                     approved_actions=excluded.approved_actions,
+                    ui_visual_scope=excluded.ui_visual_scope,
+                    visual_media_required=excluded.visual_media_required,
                     state=excluded.state, source_comment_id=excluded.source_comment_id,
                     last_head='', ci_status='UNKNOWN', blockers='[]', user_gate='[]',
                     last_progress=excluded.last_progress, completion_evidence='{}',
                     verified_criteria='[]', error_signature='', unchanged_runs=0,
-                    execution_count=0, last_report_fingerprint='', session_state='{}',
+                    execution_count=0, last_report_fingerprint='',
+                    doc_sync_state='DOC_SYNC_PENDING',doc_sync_key='',doc_sync_error='',
+                    session_state='{}',
                     updated_at=CURRENT_TIMESTAMP
             """, (
                 goal.key, goal.project, goal.chat, goal.repository, goal.branch,
                 goal.workstream_issue, goal.hash, goal.version, goal.prompt,
                 json.dumps(goal.done_criteria), json.dumps(goal.files), goal.scope,
-                json.dumps(goal.approved_actions), LifecycleState.ASSIGNED,
+                json.dumps(goal.approved_actions), int(goal.ui_visual_scope),
+                int(goal.visual_media_required), LifecycleState.ASSIGNED,
                 goal.source_comment_id, "New or materially changed GOAL assigned.",
             ))
             c.execute("DELETE FROM locks WHERE worker_key=?", (goal.key,))
@@ -198,7 +219,7 @@ class Registry:
             "last_head", "ci_status", "blockers", "user_gate", "last_progress",
             "completion_evidence", "verified_criteria", "error_signature",
             "unchanged_runs", "execution_count", "last_report_fingerprint",
-            "session_state",
+            "session_state", "doc_sync_state", "doc_sync_key", "doc_sync_error",
         }
         parts = ["state=?", "updated_at=CURRENT_TIMESTAMP"]
         values: list[object] = [state]
@@ -212,6 +233,16 @@ class Registry:
         values.append(worker_key)
         with self.tx() as c:
             c.execute(f"UPDATE workers SET {', '.join(parts)} WHERE worker_key=?", values)
+
+
+    def set_doc_sync(self, worker_key: str, state: str, *, sync_key: str = "", error: str = "") -> None:
+        with self.tx() as c:
+            c.execute(
+                """UPDATE workers
+                   SET doc_sync_state=?,doc_sync_key=?,doc_sync_error=?,updated_at=CURRENT_TIMESTAMP
+                   WHERE worker_key=?""",
+                (state, sync_key, error[:240], worker_key),
+            )
 
     def record_event(self, worker_key: str, goal_version: str, event_type: str, payload: dict) -> None:
         with self.tx() as c:

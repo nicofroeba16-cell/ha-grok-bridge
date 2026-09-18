@@ -11,6 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from .control_plane import MasterControlPlane, RouteRegistry
+from .doc_sync import DocumentationSyncOutbox
 from .engine import DocumentationDriftError, Orchestrator, format_report
 from .github_client import GitHubClient
 from .models import DEFAULT_ALLOWED_REPOSITORIES, Goal, LifecycleState
@@ -73,6 +74,8 @@ def _goal_from_row(row) -> Goal:
         files=tuple(json.loads(row["files"])),
         scope=row["scope"],
         approved_actions=tuple(json.loads(row["approved_actions"])),
+        ui_visual_scope=bool(row["ui_visual_scope"]),
+        visual_media_required=bool(row["visual_media_required"]),
         source_comment_id=row["source_comment_id"],
     )
 
@@ -231,6 +234,13 @@ def main(argv: list[str] | None = None) -> int:
         if execute_workers
         else NoExecutionWorkerAdapter()
     )
+    doc_sync = DocumentationSyncOutbox(
+        registry.conn,
+        post_comment=gh.post_issue_comment,
+        read_items=gh.read_issue_items,
+        master_repo=args.master_repo,
+        master_issue=args.master_issue,
+    )
     engine = Orchestrator(
         registry,
         worker,
@@ -238,6 +248,7 @@ def main(argv: list[str] | None = None) -> int:
         dry_run=not args.allow_non_dry_run,
         ci_verifier=gh.exact_head_ci,
         allowed_repositories=allowed_repos,
+        doc_sync=doc_sync,
     )
 
     control_plane = None
