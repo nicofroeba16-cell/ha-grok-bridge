@@ -256,7 +256,7 @@ async function resolveByTitle(page, title) {
     }
   }
 
-  await page.goto('https://chatgpt.com/', { waitUntil: 'domcontentloaded', timeout: 30000 });
+  await page.goto('https://chatgpt.com/', { waitUntil: 'domcontentloaded', timeout: 60000 });
   await new Promise((resolve) => setTimeout(resolve, 1500));
   const initial = new URL(page.url());
   if (initial.hostname !== 'chatgpt.com') throw new Error('ChatGPT session redirected away from chatgpt.com');
@@ -338,7 +338,7 @@ async function main() {
       ? await resolveByTitle(page, request.destination.title)
       : request.destination.url;
 
-    await page.goto(destination, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await page.goto(destination, { waitUntil: 'domcontentloaded', timeout: 60000 });
     const loaded = new URL(page.url());
     if (loaded.hostname !== 'chatgpt.com') throw new Error('ChatGPT session redirected away from chatgpt.com');
     if (!loaded.pathname.includes('/c/')) throw new Error('ChatGPT conversation did not load; login may be required');
